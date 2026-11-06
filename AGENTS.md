@@ -83,6 +83,32 @@ Before building in an area, read what is already there:
 When a change upgrades a shared/universal element, update it in the shared
 location, document the change, and verify every instance still renders correctly.
 
+### 6. Working the To-Do List
+
+**Capture every to-do into the list, order it with judgment, then work it to the
+end without stopping.**
+
+When the person you're working with hands you new to-dos mid-task:
+
+- **Don't interrupt what you're doing** to act on them, unless they explicitly say
+  so. Finish the thing in front of you first.
+- **Add each item to the to-do list** (your task-tracking tool) as it arrives —
+  never drop it, never hold it only in your head.
+- **Place it in a smart order.** The top of the list is the next thing to do. If
+  they say "top" or "bottom", honor that; otherwise decide where it belongs — a
+  quick unblock or something that informs later work goes high; a nice-to-have
+  goes low. Ordering is a decision you make, not a queue you append to.
+
+When you finish the item in front of you:
+
+- **Start the next one and keep going.** Work all the way through the list.
+- **Don't stop in the middle to report "a few things left" and wait.** Deliver
+  answers the person explicitly asked for as you reach them, and surface a genuine
+  blocker (a decision only they can make, an irreversible action needing
+  confirmation) — but absent that, keep moving until the list is done.
+
+This is the working default, not a mode to switch on.
+
 ## Code Quality Guardrails
 
 Adopt objective, enforced code-quality metrics rather than relying on review taste
@@ -97,7 +123,31 @@ alone. Recommended maxima (ecosystem-standard):
 
 **No grandfather list and no per-file suppression.** Refactor under the threshold
 (extract helpers, early returns, options objects) rather than disabling the rule
-for a file. A linter set to fail on any warning keeps this honest.
+for a file — never add an inline lint-disable comment for a metric rule. A linter
+set to fail on any warning keeps this honest. These metric rules often run only in
+the pre-commit hook on changed files, which is one more reason never to skip the
+hook (see "Don't bypass the pre-commit hook").
+
+## Prefer Required Parameters
+
+Advice, not a hard rule — weigh it against everything else here.
+
+A default parameter (`rows: Row[] = []`) buys callers the right to stay silent.
+Occasionally that is genuinely useful; more often it is flexibility nobody asked
+for, and it carries a failure mode: the caller who *should* have passed something
+forgets, compiles clean, and silently gets the default instead of an error.
+Defaults standing in for real data are the risky kind — an empty array means
+"there was none of it", which reads downstream as a legitimate zero rather than a
+missing argument.
+
+So start required, and add a default only when some caller genuinely lacks the
+value and the fallback is genuinely right for it. The same thinking applies to
+optional object fields (`foo?:`) that every real caller sets.
+
+The motivating case: a revenue total computed from two sources, where the second
+source defaulted to an empty list. Every caller passed both, so the default bought
+nothing — it just stood ready to let a future caller total revenue from half its
+sources and report a plausible wrong number.
 
 ## Business Logic Belongs in Services, Not View Components
 
@@ -123,7 +173,10 @@ independent attempts at the *same* logical operation produce the *same* key. A k
 seeded with `Date.now()`, `Math.random()`, a UUID, a request counter, or any
 per-attempt value defeats its own purpose: the retry mints a fresh key, the
 downstream system sees a brand-new operation, and the user gets double-charged or
-double-granted.
+double-granted. The classic incident: a payment handoff with two independent
+triggers (a scheduled job and a daily fallback sweep) and no key, so both runs
+created a recurring subscription. The fix was a key built only from the record
+handed off — `subscription_handoff_${subscriptionId}`.
 
 Rules:
 
@@ -201,8 +254,11 @@ outcome is expected normal flow:**
 - **Genuine third-party noise** — browser-extension frames and causes entirely
   outside your code.
 
-**Suppressing an alert is the rare exception.** If a condition is something you (or
-an admin) could fix, fix it and keep the alert. When triaging, the default is *fix
+**Suppressing an alert is the rare exception.** Reaching for an error-reporter
+filter, a new entry in the expected-errors allow-list, or a "return a sentinel
+instead of throwing" refactor *to make an issue disappear* is only correct when the
+underlying condition is genuinely benign and non-actionable. If a condition is
+something you (or an admin) could fix, fix it and keep the alert. When triaging, the default is *fix
 the root cause loudly*, not silence the report. If unsure whether a condition is
 benign, treat it as a real bug and keep it loud.
 
@@ -253,6 +309,29 @@ only mock targets should be third-party packages or global boundaries like `fetc
 Tests run fast because they're in-process, not because things are mocked out. There
 is **no excuse** for mocking internal code "for speed" — the real code IS fast.
 
+### Test Levels
+
+- **Unit / integration tests** — run real backend functions against the real
+  schema (an in-memory database or test backend where your stack offers one) and
+  exercise full call chains. Don't distinguish rigidly between "unit" and
+  "integration": a test that calls an endpoint which triggers an internal job is
+  not a slow integration test, it's just a test that runs real code. Mirror the
+  source structure in the test directory.
+- **Component tests** — mount the real UI component in a DOM (e.g. jsdom), drive it
+  with clicks and typing, and assert on the DOM. This exercises the template,
+  state, bindings, and handlers together. Prefer it over reading a component's
+  source text and regex-matching it: a source check passes while the component is
+  broken. Logic that can live in a service still goes in the service with its own
+  tests; component tests cover the wiring between the DOM and that logic.
+- **End-to-end tests** — browser smoke tests, one or two per area of the app, with
+  external services faked at the boundary. Keep the total small (tens, not
+  hundreds) and fail aggressively on any uncaught JavaScript error or console
+  error.
+- **Live third-party integration tests** (optional) — hit a provider's real test
+  mode (e.g. a payment provider's sandbox) with no mocks at all. These are slow and
+  flaky by nature, so rate-limit them, retry once in CI, and run them on a
+  schedule rather than on every PR.
+
 ### The Checklist
 
 When writing or reviewing tests, ask:
@@ -271,6 +350,12 @@ When writing or reviewing tests, ask:
   Use the affirmative form and put the negation in the value:
   `FEATURE_ENABLED=false`, not `FEATURE_DISABLED=true`. This avoids double-negative
   logic in conditionals.
+- **Local env files hold development credentials only.** No production credential
+  belongs on a developer's machine — not in an env file, a shell profile, or your
+  exported environment. Production secrets live in CI secrets, the production
+  deployment's own environment, and your password manager. When you need to *read*
+  production locally, fetch a scoped, read-only key just-in-time rather than
+  keeping one on disk.
 
 ## Git, PR & CI Workflow
 
@@ -293,6 +378,10 @@ commits, then push the branch.
 ### Never rewrite published history
 
 - Do NOT use `git rebase`.
+- Pull with `git pull --no-rebase` (or `git fetch` + `git merge`), never a bare
+  `git pull`. Developer machines may set `pull.rebase=true` globally, which
+  silently turns a bare pull into a rebase that replays the default branch's
+  commits onto your PR branch.
 - Do NOT force-push.
 - Do NOT use `git commit --amend`.
 
@@ -337,7 +426,45 @@ git worktree add .claude/worktrees/<short-name> <branch>
 
 When done, remove it (`git worktree remove <path>`) and prune
 (`git worktree prune`). If you start a dev server, confirm the port is free first
-and kill the server when you're done.
+and kill the server when you're done. If no port is free, push the branch and test
+against the PR's preview deployment instead.
+
+### Never merge or auto-merge a PR unless explicitly told to
+
+Opening a PR, pushing to it, watching CI, retriggering flakes, and applying review
+fixes are all yours to do autonomously. **Merging is not.** Don't run
+`gh pr merge` — with or without `--auto` — unless the human has explicitly said to
+merge (or auto-merge, or land) *that* PR. Finish to green CI, report the PR link
+and status, and stop. A general "just do it" or autonomous-maintenance instruction
+does not authorize merging; merge authorization is always explicit and per-PR. If
+several PRs are ready, list them and wait.
+
+### PR descriptions describe the end state
+
+A PR description describes **what the PR does now and why**, for a reviewer who
+never saw it evolve. It is not a changelog of how it got there. Don't write "the
+prior commit only moved the file", "reversed an earlier decision", or "first we
+tried X, then switched to Y" — that history belongs in commit messages, if
+anywhere. When the PR changes, **rewrite** the description (and title) to match the
+new state rather than appending a note.
+
+### PR descriptions and comments: one line per paragraph
+
+GitHub renders a **single newline inside a paragraph as a hard line break** in PR
+descriptions, issue and PR comments, and review comments. A hard-wrapped paragraph
+(the ~76-column wrapping editors and heredocs produce) renders as a shredded stack
+of short lines. So for any `gh pr create` / `gh pr edit` body and any
+`gh pr comment` / `gh pr review` text: **a paragraph is one line.** Put a blank line
+between paragraphs and only there; each list item is a single line. This applies
+only to GitHub-rendered PR/issue/comment text — not to commit messages (wrap those
+normally), Markdown files committed to the repo, or code.
+
+### Chat replies: give PR links, not bare numbers
+
+When you mention a PR in a chat reply to the user, give its full URL
+(`https://github.com/<owner>/<repo>/pull/<n>`), never a bare `#<n>` — in a terminal
+or chat UI a bare number is plain text the user can't click. (Inside commit
+messages and PR/issue bodies, keep `#<n>`; GitHub links it there.)
 
 ## Working With the Automated Review & Auto-Fix Loop
 
@@ -353,11 +480,12 @@ When you are the agent that owns a PR:
   handles findings at/above the threshold. Two agents pushing to the same branch
   causes non-fast-forward rejections, merge churn, and conflicting commits.
 - **Wait a few minutes** for the bot's pass. It posts a checklist comment, then
-  pushes a fix commit. Then `git pull` and build on top of its work — don't redo it.
+  pushes a fix commit. Then `git pull --no-rebase` and build on top of its work —
+  don't redo it.
 - **Only step in when the bot can't.** It cannot modify CI workflow files (its app
   typically lacks `workflows: write`), and it skips findings below the threshold.
-  Those are yours. If you must touch a file the bot is also editing, `git pull`
-  first and expect to reconcile — better to let the bot land, then layer your change.
+  Those are yours. If you must touch a file the bot is also editing,
+  `git pull --no-rebase` first and expect to reconcile — better to let the bot land, then layer your change.
 - A failing check on a commit that a newer push has superseded is usually a
   **cancelled** run (finishes in seconds), not a real failure — verify against the
   PR's latest commit before reacting.
@@ -381,8 +509,9 @@ When a **required** check is red because of a **flake or a cancelled/superseded 
 - a failure that also appears on an **unrelated docs-only PR at the same time** —
   a shared-CI-environment problem, not your diff.
 
-If your token can't call the re-run API, push a trivial empty commit to start a
-fresh run:
+An agent's token often lacks `actions: write`, so the re-run API returns
+`403 Resource not accessible by integration`. Don't stop and ask a human to click
+"Re-run failed jobs" — push a trivial empty commit to start a fresh run:
 
 ```bash
 git commit --allow-empty -m "chore: retrigger CI (flaky infra / cancelled run)"
