@@ -166,8 +166,7 @@ jobs:
               or refunds mishandled, plans that did not deliver as advertised,
               fraud or manual-review controls.
             - Compliance and legal: privacy fixes, consent/terms/disclosure
-              changes made to meet a legal requirement, data retention, wording
-              changed because earlier copy overpromised.
+              changes made to meet a legal requirement, data retention.
             - Infrastructure and vendors: environments, which provider does what,
               failover, configuration, moderation or safety-filter mechanics.
             - Admissions: nothing that implies the project did something wrong

@@ -12,7 +12,7 @@ One Markdown file, newest-first. Each day with user-facing changes gets a dated
 H2 heading (ISO 8601, `YYYY-MM-DD`, UTC) with categorized H3 sub-sections:
 
 ```markdown
-## 2026-03-25
+## 2025-01-15
 
 ### New
 
@@ -66,9 +66,8 @@ so only the user-visible change remains) when it touches any of:
   disputes mishandled, plans that did not deliver what was advertised, and any
   fraud or manual-review controls.
 - **Compliance and legal.** Privacy fixes; consent, terms, opt-in or disclosure
-  changes made to meet a legal requirement; tax and reporting thresholds; data
-  retention or third-party data handling; wording changed because earlier copy
-  overpromised.
+  changes made to meet a legal requirement; data
+  retention or third-party data handling.
 - **Infrastructure and vendors.** Environments (production, previews), which
   provider does what, failover behavior, configuration, and moderation or
   safety-filter mechanics.

@@ -117,9 +117,7 @@ section, because they are written to be permissive and then forgotten:
       `whoami`, `env`, or `info` across every runtime's routes. For each: is it
       authenticated, and would you be content to see its full response body
       posted publicly? If the answer to either is no, it is a finding —
-      regardless of how old it is or how obviously nobody uses it. A forgotten
-      debug endpoint that echoes its request object is a classic way to serve
-      every secret in the environment to an unauthenticated GET.
+      regardless of how old it is or how obviously nobody uses it.
 - [ ] A route gated only by obscurity (an unguessable path segment) is a LOW at
       best and must be called out as such — it is not authentication.
 - [ ] Unauthenticated endpoints that write state (seeders, loggers, counters)

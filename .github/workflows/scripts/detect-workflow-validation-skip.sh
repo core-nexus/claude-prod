@@ -41,7 +41,7 @@
 # can act on, and so the verify gate sees a real report.
 #
 # Uncertainty always resolves to `false`. A wrong `true` costs a QA pass; a
-# wrong `false` costs the confusing red we already have today. Those are not
+# wrong `false` costs a confusing red check. Those are not
 # symmetric, so we only claim a skip when we can prove one.
 #
 # Tested by detect-workflow-validation-skip.test.sh.

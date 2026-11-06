@@ -186,9 +186,9 @@ credentials.
 The size of your test plan MUST match the PR's ambition — the
 count of major areas you enumerated in Step 1. There is no fixed
 scenario cap. Do NOT run a two-scenario pass on a PR that
-reshaped six things: coming back with two screenshots of two
-states when the PR tackled six areas is the exact failure this
-pass exists to prevent.
+reshaped six things: a couple of screenshots for a PR that
+changed many areas is exactly the failure this pass exists to
+prevent.
 
 **For EACH major area you enumerated in Step 1, run a focused
 mini-QA:**
@@ -298,7 +298,7 @@ For each scenario, execute real interactions:
   and console errors.
 - **A preview backend often persists across QA runs.** A
   one-shot or mutating action (submit a form, delete a row,
-  complete onboarding) may already have been consumed by an
+  finish a one-time setup step) may already have been consumed by an
   earlier run for this PR — the button is gone or the state is
   already advanced. Don't drop that area to a single reused
   screenshot: exercise the same flow with a user or fresh data

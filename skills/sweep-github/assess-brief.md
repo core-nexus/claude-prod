@@ -68,7 +68,7 @@ How to find the evidence fast:
 - **Even when a PR's mechanism is obsolete, check whether its user-facing
   payload landed** before closing it.
 - **External tracker ids rarely appear in merged PRs.** Search by the
-  symptom's keywords instead. If the PR links a tracker card, check the card's
+  symptom's keywords instead. If the PR links a tracker ticket, check the ticket's
   status (e.g. backlog, blocked) if you have access.
 - **A `duplicate` label rarely names its target.** List PRs created in the same
   window (`--search 'created:A..B'`).
@@ -88,9 +88,9 @@ How to find the evidence fast:
   `refs/sweep/*` refs when done.
 - **Use the cached JSON the coordinator gives you** before calling `gh`. Many
   agents share one API rate limit.
-- **A PR synced to an external tracker card that is still "in review"** may be
+- **A PR synced to an external tracker ticket that is still open** may be
   reopened by the sync bot after a close. Say so in `notes`, so the
-  coordinator closes the card too.
+  coordinator closes the ticket too.
 
 **Human threads:** when the operator's account also posts bot write-ups and
 trigger comments (`/qa-review`, `/claude-fix`, `/claude-review`), read the

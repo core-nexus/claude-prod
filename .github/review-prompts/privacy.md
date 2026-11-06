@@ -30,9 +30,9 @@ and protected throughout the codebase.
       payment-provider ids, contact details) and verify EVERY query that returns
       a user row either is the caller's own profile or projects only public-safe
       fields — never spreads the whole record
-- [ ] Fields derived from sensitive data (e.g. derived from birth date, location,
-      or health inputs) are gated as strictly as the source
-      fields, or they re-expose them
+- [ ] Derived or inferred fields (scores, profiles, inferences) are gated as
+      strictly as the sensitive inputs they are computed from, or they
+      re-expose them
 - [ ] Owner-only reads (private records, contact lookups) are
       gated to the owner/admin, and lookups by email/phone can't be used to
       enumerate accounts

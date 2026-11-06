@@ -144,10 +144,10 @@ So start required, and add a default only when some caller genuinely lacks the
 value and the fallback is genuinely right for it. The same thinking applies to
 optional object fields (`foo?:`) that every real caller sets.
 
-For example: a revenue total computed from two sources, where the second source
-defaults to an empty list. If every caller passes both, the default buys nothing —
-it just stands ready to let a future caller total revenue from half its sources and
-report a plausible wrong number.
+For example: a total computed from two lists, where the second defaults to `[]`.
+If every caller passes both, the default buys nothing — it just stands ready to let
+a future caller compute the total from half its inputs and report a plausible wrong
+number.
 
 ## Business Logic Belongs in Services, Not View Components
 
@@ -173,10 +173,9 @@ independent attempts at the *same* logical operation produce the *same* key. A k
 seeded with `Date.now()`, `Math.random()`, a UUID, a request counter, or any
 per-attempt value defeats its own purpose: the retry mints a fresh key, the
 downstream system sees a brand-new operation, and the user gets double-charged or
-double-granted. A classic failure mode: a payment handoff with two independent
-triggers (say, a scheduled job and a fallback sweep) and no key, so both runs
-create a recurring subscription. The fix is a key built only from the record
-handed off — `subscription_handoff_${subscriptionId}`.
+double-granted. For example, if two triggers can fire for the same
+handoff and both mint their own key, both run; a key built only from the record
+being handed off (`handoff_${recordId}`) makes the second a no-op.
 
 Rules:
 

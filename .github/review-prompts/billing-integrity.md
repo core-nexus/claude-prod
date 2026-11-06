@@ -146,9 +146,8 @@ finding.
       accounted **separately** from customer
       usage and is not folded into customer-facing cost/P&L — it is pure COGS
       with no matching revenue.
-- [ ] If internal usage is debited through the same markup function, its
-      reported "spend" is N× real cost — burn-rate, balance-gating, and any
-      automatic top-up thresholds must account for that.
+- [ ] Internal usage is costed at real provider cost, not at the
+      customer-facing price.
 
 ### G. Processor ↔ Ledger Reconciliation
 

@@ -28,7 +28,7 @@ skill changes nothing a browser can observe.) Manual `/claude-review` and
 always force a run.
 
 `paths-ignore` cannot express exceptions, so it cannot say "`*.html` is docs
-except under `src/`". An app-shell-only PR (`src/app.html`) therefore skips these
+except under `src/`". An app-shell-only PR (e.g. `src/index.html`) therefore skips these
 two **advisory** AI workflows. That is safe as long as your deterministic suite
 gates on the classifier below (which does treat `src/*.html` as code); if you'd
 rather the AI passes fire too, drop `'**/*.html'` from their `paths-ignore`.

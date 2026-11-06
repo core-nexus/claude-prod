@@ -59,7 +59,7 @@ env:
   INSTALL_COMMAND: npm ci
   LINT_COMMAND: npx eslint . --max-warnings 0
   NODE_VERSION_FILE: package.json
-  NODE_OPTIONS: --max-old-space-size=6144
+  NODE_OPTIONS: --max-old-space-size=4096
 
 jobs:
   lint-uncached:

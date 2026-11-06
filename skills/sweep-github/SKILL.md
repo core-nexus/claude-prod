@@ -311,7 +311,7 @@ Link every PR and issue with its full URL
 Every run teaches something. Before finishing, fold the run's lessons into this
 file, `assess-brief.md` or the scripts, and open a PR from a worktree.
 
-## Lessons from past runs
+## Lessons
 
 - **Supersession hides behind unrelated titles.** `git log -S '<string main
   now has>'` names the fixing PR far more reliably than searching titles.
@@ -341,7 +341,7 @@ file, `assess-brief.md` or the scripts, and open a PR from a worktree.
   in the few days after an issue was filed finds same-day fixes that never
   linked back.
 - **A bot that syncs PRs with an external tracker can reopen a closed PR**
-  while its card is still "in review". Close the card too.
+  while its linked ticket is still open. Close the ticket too.
 - **Many parallel agents share one GitHub API rate limit.** Cache the PR and
   issue JSON once and hand it to the agents. Check `gh api rate_limit` before
   a big wave.

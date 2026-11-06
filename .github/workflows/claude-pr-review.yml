@@ -177,7 +177,7 @@ jobs:
                - Frontend: graceful degradation is fine, BUT always report to the
                  error service AND tell the user
                - A warning log is NOT error handling — only for non-error
-                 conditions (e.g. a disabled feature flag)
+                 conditions
                - Ask: "If this fails in production, will we find out?"
 
             4. **Code Quality & Style**

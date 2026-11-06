@@ -69,7 +69,7 @@ Work the backend in this order; it is sorted by blast radius.
 - [ ] For each fast-growing table, list its indexes. Does **every** query path
       against it hit an index, or will some do a full scan at scale?
 - [ ] Identify tables that grow **without bound and are never pruned** (logs,
-      events, extracts, ledger rows, rate-limit rows). Is there a cleanup job or
+      events, ledger rows, rate-limit rows). Is there a cleanup job or
       archival path? Unbounded growth is a cost and latency time bomb.
 - [ ] Identify **quadratic** tables (relationship / many-to-many graphs). These
       are the first to become infeasible; confirm they are capped or paginated.

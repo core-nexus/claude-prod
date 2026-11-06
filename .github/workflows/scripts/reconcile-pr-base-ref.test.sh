@@ -72,7 +72,7 @@ cleanup_fixture() {
 
 # --- Tests ----------------------------------------------------------------
 
-# The reported failure: a PR was opened against a parent PR branch, the
+# The failure this guards against: a PR was opened against a parent PR branch, the
 # parent merged mid-run, and the branch was deleted out from under the
 # frozen payload. Rewriting the base to the default branch removes the
 # dependency on that ephemeral ref entirely.

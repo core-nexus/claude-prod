@@ -116,7 +116,7 @@ it out, so the next run doesn't repeat it.
    sub-pixel strokes that real displays draw, so a letter can look broken. Only
    file a glyph-rendering bug if it also reproduces at `deviceScaleFactor: 2`.
 4. `<YOUR_INTENTIONAL_ODDITIES>` — list the things in your app that look wrong to
-   a newcomer but are deliberate (an unusual URL format, a known cosmetic issue
+   a newcomer but are deliberate (a known cosmetic issue
    you've decided to live with, a page that is intentionally sparse), each with a
    one-line reason.
 
@@ -147,7 +147,7 @@ on something you didn't really try is worse still.
      there.
    - **A layout fix:** check a 320px viewport, and one width step above any media
      query you add. Also check enlarged text (simulate with
-     `document.documentElement.style.fontSize = '145%'`).
+     a large root font size, e.g. `document.documentElement.style.fontSize = '150%'`).
 3. **Open the PR** with the BEFORE embedded and an "after — pending preview"
    placeholder. Title: `QA: <surface> — <problem>`. Pushing the branch triggers the
    preview deploy.
@@ -160,8 +160,7 @@ on something you didn't really try is worse still.
 5. **Host the screenshots where they render inline.** On a private repo,
    `github.com` blob URLs and `raw.githubusercontent.com` don't render for
    reviewers' image embeds, so push both images to `<SCREENSHOT_HOST>` (for example
-   a dedicated branch of a public artifacts repo, served from
-   `raw.githubusercontent.com`) and verify each URL returns HTTP 200 before
+   any public image host your reviewers can load) and verify each URL returns HTTP 200 before
    embedding. Use PNG/JPG/WEBP (SVG is often served as `text/plain`). If hosting
    fails, commit the images to the PR branch under `.qa/screenshots/` and link them,
    and say **loudly** in the PR and summary that inline hosting failed.

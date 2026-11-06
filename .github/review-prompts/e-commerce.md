@@ -134,15 +134,14 @@ credit/feature list on the same plan card is a trust and compliance issue.
       just the latest one
 - [ ] Lost disputes/chargebacks reverse what the original payment granted (and
       what was booked), not only refunds — a lost dispute sends no refund event
-- [ ] A reversal of something already **paid out** (third-party
-      payouts) books a liability instead of clawing back an unrelated ledger
+- [ ] Reversals of funds already **paid out** to third parties are handled
+      explicitly (a liability or a recovery), not silently
 - [ ] Payouts to third parties are held long enough to outlast the card-dispute
       window, at least above a value threshold; a late chargeback against money
       already paid out is usually unrecoverable
 - [ ] Settlement/payout queues drain: a row that can never settle (e.g. its
       recipient was deleted) is voided, not skipped forever while blocking the
       rows behind it
-- [ ] Every earner of a payable balance has a path to withdraw it
 
 ### Data Consistency
 

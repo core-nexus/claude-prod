@@ -49,7 +49,7 @@ At 100x scale:
   - "Get all items for user" — fine at 5, broken at 500
   - "Get all members" — fine at 20, broken at 2,000
   - Every list query needs a limit or pagination strategy
-- [ ] **Silent truncation**: a scan cap (`take(10_000)`) that quietly drops
+- [ ] **Silent truncation**: a scan cap (e.g. `LIMIT 10000`) that quietly drops
       older rows is a correctness bug, not a fix — use an index or a junction
       table so the lookup is a point read. Never cap a correctness-critical
       aggregation (relationship edges, ledger sums) without a cursor that drains it.
@@ -105,7 +105,7 @@ At 100x scale:
       they be bypassed with multiple accounts? What is the worst-case cost if
       every user hits them?
 - [ ] **Rate-limit buckets are per feature/cost class.** One shared counter
-      across chat, image, and voice lets a cheap feature exhaust an expensive
+      across features with different cost classes lets a cheap feature exhaust an expensive
       one's budget (or vice versa).
 - [ ] **AI/ML API costs**: token limits, request caps — calculate the monthly
       cost at 10x and 100x active users. Are there per-user daily/monthly caps?
