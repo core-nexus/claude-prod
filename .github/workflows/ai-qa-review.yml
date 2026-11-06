@@ -13,7 +13,14 @@ name: AI QA Review
 #     `synchronize` is deliberately excluded; pushing commits to a PR will
 #     NOT re-run QA. Use `/qa-review` to re-trigger against the new head.
 #   - issue_comment: `/qa-review` in a PR comment for manual re-runs.
+#     Any text after `/qa-review` (same line or following lines) is passed to
+#     the agent as extra focus instructions, e.g.
+#     `/qa-review focus on the empty state and keyboard navigation`.
 #   - workflow_dispatch: manual run against a given PR number.
+#
+# Draft PRs are skipped on the automatic path (a draft fires `opened` and
+# then `ready_for_review`, so this also avoids QA-ing it twice);
+# `/qa-review` still forces a run on a draft.
 #
 # Required setup for your repo:
 #   - Secret `CLAUDE_CODE_OAUTH_TOKEN`.
@@ -22,17 +29,44 @@ name: AI QA Review
 #     `PREVIEW_URL_PATTERN` (env var, default any HTTPS URL). Customize it
 #     for your platform — most preview-deploy bots post a URL in a PR
 #     comment within a minute of the PR opening.
+#
+# Knobs:
+#   - QA_BUDGET_MINUTES (Render QA prompt step, default 25): the agent's
+#     wall-clock budget. It is stamped into the prompt as a deadline the
+#     agent plans against, so it wraps up and writes its report on its own.
+#     Keep the job's `timeout-minutes` above preview wait + budget + slack.
+#   - MEDIA_BASE_URL (Post QA review comment step): set it to a public host
+#     you mirror screenshots to, for inline images. Default: link to the
+#     workflow artifact bundle.
+#
+# A PR that edits THIS workflow file cannot be QA'd by it: the Claude GitHub
+# App refuses to run an agent whose invoking workflow differs from the copy
+# on the default branch (an anti-tampering guard). The workflow detects that
+# up front and posts an explanatory, non-blocking report instead of failing.
+#
+# Scripts used (copy them all from .github/workflows/scripts/):
+#   extract-qa-custom-instructions.sh, qa-review-custom-instructions-section.template.md,
+#   post-qa-starting-comment.sh, detect-workflow-validation-skip.sh,
+#   wait-for-preview-url.sh, prewarm-qa-mcp.sh, wrap-mcp.sh,
+#   qa-review-prompt.template.md, reconcile-pr-base-ref.sh,
+#   verify-qa-report.sh, post-qa-comment.sh, handle-tracking-comment-failure.sh
 
 on:
   pull_request:
     types:
       - opened
       - ready_for_review
-    # Docs/CI/skills-only PRs have nothing browser-observable to QA — skip.
+    # Docs- and skills-only PRs have nothing browser-observable to QA — skip.
+    # `paths-ignore` skips only when EVERY changed file matches, so a PR
+    # mixing any source file with these still runs. Manual `/qa-review` and
+    # workflow_dispatch ignore path filters. See docs/ci-docs-only-skip.md.
     paths-ignore:
       - '**/*.md'
+      - '**/*.html'
       - '**/*.txt'
+      - 'doc/**'
       - 'docs/**'
+      - 'skills/**'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -54,21 +88,31 @@ concurrency:
     }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Default to least-privilege. Jobs that need more declare their own
+# permissions block, which overrides this default.
+permissions:
+  contents: read
+
 jobs:
   qa:
     # Triggered by:
-    #   (a) PR opened / ready_for_review,
+    #   (a) non-draft PR opened / ready_for_review,
     #   (b) a non-bot OWNER/MEMBER/COLLABORATOR commenting `/qa-review` on a PR,
     #   (c) manual workflow_dispatch.
     # Dependabot is skipped: mechanical dep bumps don't need visual QA.
     # The author_association gate stops a fork-PR author from spending Anthropic
     # credits / exposing the browser MCP by commenting on their own PR.
     if: |
-      (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]') ||
+      (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.draft == false) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && !endsWith(github.actor, '[bot]') && contains(github.event.comment.body, '/qa-review') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
       (github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A BACKSTOP, not the agent's budget: the agent self-limits against the
+    # deadline rendered into its prompt (QA_BUDGET_MINUTES below). This only
+    # has to cover preview wait (~20m) + the agent's budget + setup slack.
+    # Don't raise it to "give QA more time" — a run killed at the ceiling
+    # posts NO report, which is worse than a shallower one that reports.
+    timeout-minutes: 50
     permissions:
       # Intentionally scoped tight. The LLM agent runs in this job and must
       # not hold a token that could push to any branch — prompt-injection
@@ -87,6 +131,31 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Pull any custom instructions appended to the `/qa-review` comment.
+      # The body is untrusted user text, so it reaches the script via env,
+      # never argv/shell interpolation, and is written to GITHUB_OUTPUT
+      # under a random delimiter: a fixed one could be typed into the
+      # comment to end the value early and inject further outputs.
+      - name: Extract custom instructions from trigger comment
+        id: custom-instructions
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          INSTRUCTIONS="$(bash .github/workflows/scripts/extract-qa-custom-instructions.sh)"
+          DELIM="QA_CUSTOM_INSTRUCTIONS_EOF_$(openssl rand -hex 16)"
+          {
+            echo "instructions<<${DELIM}"
+            printf '%s' "${INSTRUCTIONS}"
+            echo
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
+          if [[ -n "${INSTRUCTIONS}" ]]; then
+            echo "Extracted $(printf '%s' "${INSTRUCTIONS}" | wc -c) bytes of custom instructions."
+          else
+            echo "No custom instructions in trigger; running default QA pass."
+          fi
+
       # Post an immediate "QA starting" ack so the PR shows confirmation
       # within seconds. Without this, the user sees no feedback until
       # claude-code-action's `track_progress` comment lands — typically
@@ -103,6 +172,24 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
         run: .github/workflows/scripts/post-qa-starting-comment.sh
 
+      - name: Prepare QA artifacts directory
+        run: |
+          rm -rf "${GITHUB_WORKSPACE}/qa-artifacts"
+          mkdir -p "${GITHUB_WORKSPACE}/qa-artifacts"
+
+      # The Claude GitHub App refuses to run the agent when the PR edits the
+      # workflow file that invokes it (a correct anti-tampering guard). That
+      # would leave the job with no report and a red verify gate for a
+      # reason unrelated to the PR. Detect it here — before the expensive
+      # waits — and write an honest, non-blocking report instead.
+      - name: Detect workflow-validation skip
+        id: wf-validation
+        env:
+          WORKFLOW_FILE: .github/workflows/ai-qa-review.yml
+          ARTIFACTS_DIR: ${{ github.workspace }}/qa-artifacts
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: .github/workflows/scripts/detect-workflow-validation-skip.sh
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -111,10 +198,12 @@ jobs:
       # Playwright MCP drives a real Chromium via Playwright; install only
       # chromium to keep the bootstrap under ~30s.
       - name: Install Playwright Chromium
+        if: steps.wf-validation.outputs.will-skip != 'true'
         run: npx --yes playwright@latest install --with-deps chromium
 
       - name: Wait for preview URL
         id: preview
+        if: steps.wf-validation.outputs.will-skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -126,11 +215,6 @@ jobs:
           #   Cloudflare: 'https://[a-f0-9]+-[^.]+\.[^.]+\.workers\.dev'
           # PREVIEW_URL_PATTERN: 'https://[a-z0-9-]+\.vercel\.app'
         run: .github/workflows/scripts/wait-for-preview-url.sh
-
-      - name: Prepare QA artifacts directory
-        run: |
-          rm -rf "${GITHUB_WORKSPACE}/qa-artifacts"
-          mkdir -p "${GITHUB_WORKSPACE}/qa-artifacts"
 
       # Pre-warm the browser MCP packages with retry/backoff BEFORE
       # claude-code-action launches them. The most common failure mode is
@@ -146,6 +230,7 @@ jobs:
       # agent budget just to write the same no-op comment.
       - name: Pre-warm browser MCP packages
         id: mcp-prewarm
+        if: steps.wf-validation.outputs.will-skip != 'true'
         env:
           ARTIFACTS_DIR: ${{ github.workspace }}/qa-artifacts
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -173,7 +258,7 @@ jobs:
       # GitHub-hosted runners.
       - name: Build MCP server config
         id: mcp-config
-        if: steps.mcp-prewarm.outputs.any-ok == 'true'
+        if: steps.mcp-prewarm.outputs.any-ok == 'true' && steps.wf-validation.outputs.will-skip != 'true'
         env:
           MCP_CONFIG_PATH: ${{ github.workspace }}/qa-artifacts/mcp-config.json
           WRAP_MCP: ${{ github.workspace }}/.github/workflows/scripts/wrap-mcp.sh
@@ -229,35 +314,81 @@ jobs:
           PREVIEW_URL: ${{ steps.preview.outputs.preview-url }}
           WORKSPACE: ${{ github.workspace }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Raw custom-instructions payload (may be empty or multi-line).
+          CUSTOM_INSTRUCTIONS: ${{ steps.custom-instructions.outputs.instructions }}
+          # The agent's wall-clock budget in minutes — the single number that
+          # sizes the pass. Keep `timeout-minutes` above preview wait + this.
+          QA_BUDGET_MINUTES: '25'
         run: |
           set -euo pipefail
+
+          # Stamp the deadline HERE, after the preview wait, so a slow
+          # preview deploy eats the job's slack rather than the agent's time.
+          QA_DEADLINE_UTC="$(date -u -d "+${QA_BUDGET_MINUTES} minutes" +'%Y-%m-%dT%H:%M:%SZ')"
+          export QA_DEADLINE_UTC
+          echo "QA agent budget: ${QA_BUDGET_MINUTES}m — deadline ${QA_DEADLINE_UTC}"
+
+          # Build the framed section only when there are instructions, so a
+          # default run carries no empty heading. Only $CUSTOM_INSTRUCTIONS is
+          # substituted into the section template.
+          if [[ -n "${CUSTOM_INSTRUCTIONS}" ]]; then
+            CUSTOM_INSTRUCTIONS_SECTION="$(envsubst '$CUSTOM_INSTRUCTIONS' \
+              < .github/workflows/scripts/qa-review-custom-instructions-section.template.md)"
+            CUSTOM_INSTRUCTIONS_SECTION="${CUSTOM_INSTRUCTIONS_SECTION}"$'\n\n'
+          else
+            CUSTOM_INSTRUCTIONS_SECTION=""
+          fi
+          export CUSTOM_INSTRUCTIONS_SECTION
+
           # envsubst is given an EXPLICIT allowlist of variables so it only
           # substitutes the placeholders set above. Without this guard, any
           # bare `$ARTIFACTS_DIR` / `$PR_NUMBER` reference INSIDE the
           # prompt body — there for the agent to read — would also get
           # substituted, turning instructions into empty strings.
+          # CUSTOM_INSTRUCTIONS itself is NOT in the list, so `$VAR`s a user
+          # typed inside their instructions are never expanded.
+          #
+          # Random delimiter: the body embeds user-controlled text, so a
+          # fixed sentinel could be used to inject GITHUB_OUTPUT commands.
+          BODY_DELIM="QA_PROMPT_BODY_EOF_$(openssl rand -hex 16)"
           {
-            echo "body<<QA_PROMPT_BODY_EOF"
-            envsubst '$REPO $PR_NUMBER $PREVIEW_URL $WORKSPACE $RUN_URL' \
+            echo "body<<${BODY_DELIM}"
+            envsubst '$REPO $PR_NUMBER $PREVIEW_URL $WORKSPACE $RUN_URL $QA_DEADLINE_UTC $CUSTOM_INSTRUCTIONS_SECTION' \
               < .github/workflows/scripts/qa-review-prompt.template.md
-            echo "QA_PROMPT_BODY_EOF"
+            echo "${BODY_DELIM}"
           } >> "$GITHUB_OUTPUT"
+
+      # claude-code-action restores the checkout's executable config
+      # (`.claude/`, `.mcp.json`, `CLAUDE.md`, …) from the PR's base branch,
+      # named by the frozen webhook payload. This job can idle ~20 minutes
+      # waiting for the preview — long enough, on a stacked PR, for the
+      # parent to merge and its branch to be deleted, killing the restore's
+      # `git fetch`. Repoint the restore at the default branch (the only ref
+      # that is reviewed and guaranteed to exist). No-op on a main-based PR.
+      # Placed right before the action so it edits the payload it reads.
+      - name: Reconcile the agent's trusted-config restore base
+        if: steps.mcp-prewarm.outputs.any-ok == 'true' && steps.wf-validation.outputs.will-skip != 'true'
+        run: .github/workflows/scripts/reconcile-pr-base-ref.sh
 
       - name: AI QA Review
         # Skip the agent entirely when both MCPs failed pre-warm — the
         # prewarm step has already written a diagnostic _comment.md that
-        # the post-comment step will pick up.
-        if: steps.mcp-prewarm.outputs.any-ok == 'true'
+        # the post-comment step will pick up — or when the App will
+        # decline to run it (see the workflow-validation step).
+        if: steps.mcp-prewarm.outputs.any-ok == 'true' && steps.wf-validation.outputs.will-skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
+          # Tracking only exists on PR-context events; a manual dispatch has
+          # none (the action refuses it there). The report is posted from
+          # the artifacts either way, so nothing is lost.
+          track_progress: ${{ github.event_name != 'workflow_dispatch' }}
           allowed_bots: 'claude[bot],app/claude,github-actions[bot]'
           claude_args: >-
             --dangerously-skip-permissions
             --mcp-config '${{ steps.mcp-config.outputs.json }}'
             --model opus
-            --max-turns 250
+            --max-turns 300
             --append-system-prompt "If a CLAUDE.md file exists at the repo root, read it before reviewing — it defines project conventions and the blocking-issue bar. Treat CLAUDE.md as authoritative."
 
           prompt: ${{ steps.render-prompt.outputs.body }}
@@ -265,8 +396,8 @@ jobs:
       # Verify the QA pass actually QA'd. If the agent (or the prewarm step
       # before it) wrote a "could not run" verdict to _comment.md — meaning
       # no browser session, no screenshots, no real review — fail the qa
-      # job so the post-comment step's failure-banner branch fires (instead
-      # of deleting the tracking comment) and the PR check shows red.
+      # job so the mark-failed step below keeps the tracking comment (with a
+      # diagnostic banner) instead of deleting it, and the PR check shows red.
       - name: Verify QA produced a real report
         if: always()
         env:
@@ -308,4 +439,32 @@ jobs:
           ARTIFACTS_DIR: ${{ github.workspace }}/qa-artifacts
           ARTIFACT_NAME: qa-artifacts-${{ github.run_id }}
           QA_RESULT: ${{ job.status }}
+          # Optional: a public host you mirrored the media to, for inline images.
+          # MEDIA_BASE_URL: https://your-media-host.example.com/pr-N/run-ID
         run: .github/workflows/scripts/post-qa-comment.sh
+
+      # On success the claude[bot] `track_progress` comment duplicates the
+      # report just posted, so delete it. On failure/cancellation keep it and
+      # append a banner naming the failed step, the run conclusion, and the
+      # tails of the MCP logs — the partial record is the best diagnostic.
+      - name: Delete claude[bot] tracking comment (on QA success only)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          RUN_ID: ${{ github.run_id }}
+          ACTION: delete
+        run: .github/workflows/scripts/handle-tracking-comment-failure.sh
+
+      - name: Mark tracking comment as failed (on QA failure)
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          RUN_ID: ${{ github.run_id }}
+          JOB_NAME: ${{ github.job }}
+          ARTIFACTS_DIR: ${{ github.workspace }}/qa-artifacts
+          ACTION: mark-failed
+        run: .github/workflows/scripts/handle-tracking-comment-failure.sh

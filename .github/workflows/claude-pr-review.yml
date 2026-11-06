@@ -1,41 +1,105 @@
 name: Claude PR Review
 
-# Two-stage pipeline: review → fix (if needed).
-# Triggers: PR events (auto), /claude-review (manual review), /claude-fix (manual fix).
+# Two-stage pipeline: review → fix (if needed). Pairs with `ai-qa-review.yml`,
+# which runs in parallel and is independent of this fix gate.
+#
+# Triggers:
+#   - pull_request (opened / ready_for_review, non-draft): runs the review;
+#     the fix job runs after it via `needs: review` when the posted priority
+#     is at or above MAXIMUM_FIX_PRIORITY.
+#   - issue_comment: `/claude-review` (manual review), `/claude-fix` (manual
+#     fix — skips the review job). OWNER / MEMBER / COLLABORATOR only.
+#   - workflow_dispatch: manual run of either stage against a PR number.
+#
+# Required setup:
+#   - Secret CLAUDE_CODE_OAUTH_TOKEN.
+#   - Optional secret CLAUDE_PAT: a fine-grained PAT with actions:write +
+#     contents:read. After the fixer pushes, the last step dispatches your CI
+#     workflows on the PR branch (pushes made by a bot token may not fire
+#     `pull_request: synchronize`). Without it the dispatch falls back to the
+#     job's GITHUB_TOKEN, which has no actions:write here, so it is skipped.
+#   - Set WORKFLOWS in the "Trigger CI workflows" step to your CI workflow
+#     filenames, and edit the fixer prompt's "Quality gates" to your
+#     project's lint / type-check / test commands.
+#
+# Scripts used: reconcile-pr-base-ref.sh, extract-pr-review-priority.sh,
+#   handle-tracking-comment-failure.sh, trigger-ci-workflows.sh.
+#
+# Why fix chains off `needs: review` (same workflow) rather than
+# `workflow_run`: claude-code-action's `track_progress` only works on
+# PR-context events and hard-fails on `workflow_run` / `workflow_dispatch`.
+# Same-workflow chaining keeps the fixer's progress comment on the PR. On a
+# workflow_dispatch run tracking is turned off and the reviewer posts its
+# own comment.
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review/fix'
+        required: true
+        type: string
+      stage:
+        description: 'Which stage to run: review (code review only), or fix (address existing findings)'
+        required: false
+        default: 'review'
+        type: choice
+        options:
+          - review
+          - fix
   pull_request:
     types:
       - ready_for_review
       - opened
     # Docs/text-only PRs have nothing to review or fix — skip to save cost.
+    # `paths-ignore` skips only when EVERY changed file matches, so any code
+    # file still gets reviewed. Manual `/claude-review` and workflow_dispatch
+    # bypass this filter. See docs/ci-docs-only-skip.md.
     paths-ignore:
       - '**/*.md'
+      - '**/*.html'
       - '**/*.txt'
+      - 'doc/**'
       - 'docs/**'
   issue_comment:
     types: [created]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event.pull_request.number
+        || github.event.issue.number
+        || inputs.pr_number
+    }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # MAXIMUM_FIX_PRIORITY is the MINIMUM review severity at which the fix stage
-# runs automatically. Findings below it are left for a human (or a manual
-# /claude-fix). Valid values: HIGH, MEDIUM, LOW, XLOW. Default MEDIUM = auto-fix
-# real issues but leave minor/LOW findings for human judgment.
+# runs automatically AND the minimum severity the fixer is allowed to touch.
+# Findings below it are left for a human (or a manual /claude-fix). Valid
+# values: HIGH, MEDIUM, LOW, XLOW. Default MEDIUM = auto-fix real issues but
+# don't spend a fix cycle (and its inherent risk) on LOW/XLOW findings.
 env:
   MAXIMUM_FIX_PRIORITY: MEDIUM
+
+# Default to least-privilege. Jobs that need more declare their own
+# permissions block, which overrides this default.
+permissions:
+  contents: read
 
 jobs:
   # ─── Stage 1: Review ───────────────────────────────────────────────────────
   review:
-    # Run on PR events (not dependabot), or on "/claude-review" comments on PRs.
+    # Run on non-draft PR events (not dependabot), "/claude-review" comments,
+    # or workflow_dispatch with stage=review.
+    # Drafts are skipped: a draft fires `opened` and then `ready_for_review`
+    # when marked ready, so gating on draft==false both avoids reviewing WIP
+    # and prevents a double review. `/claude-review` still forces one.
     # The author_association gate on the comment branch stops a fork-PR author
     # from triggering a review+fix run with full repo secrets on their own diff.
     if: |
-      (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]') ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && !endsWith(github.actor, '[bot]') && contains(github.event.comment.body, '/claude-review') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.draft == false) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && !endsWith(github.actor, '[bot]') && contains(github.event.comment.body, '/claude-review') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'workflow_dispatch' && inputs.stage == 'review')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -53,20 +117,37 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Repoint the agent's trusted-config restore at the default branch so a
+      # stacked PR's base branch disappearing mid-run can't kill the job. See
+      # reconcile-pr-base-ref.sh for the rationale; a no-op on a main-based PR.
+      - name: Reconcile the agent's trusted-config restore base
+        run: .github/workflows/scripts/reconcile-pr-base-ref.sh
+
       - name: PR Review
         id: review
         uses: anthropics/claude-code-action@v1
+        env:
+          # So the reviewer can `gh pr comment` on a workflow_dispatch run.
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
+          # Tracking only exists on PR-context events; a manual dispatch has none.
+          track_progress: ${{ github.event_name != 'workflow_dispatch' }}
+          allowed_bots: 'claude[bot],app/claude,github-actions[bot]'
           claude_args: >-
             --dangerously-skip-permissions
             --model opus
             --append-system-prompt "If a CLAUDE.md file exists at the repo root, read and internalize it before reviewing. It contains the project's coding standards and conventions. Treat it as authoritative."
 
+          # --- Use Sonnet for reviews to save costs (uncomment to switch) ---
+          # claude_args: >-
+          #   --dangerously-skip-permissions
+          #   --model sonnet
+          #   --append-system-prompt "If a CLAUDE.md file exists at the repo root, read it before reviewing."
+
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
 
             You are reviewing a pull request. If a CLAUDE.md exists, read it first.
             Review the diff against these focus areas. Only comment on things that
@@ -76,6 +157,11 @@ jobs:
                - API endpoints that access user data verify identity
                - Admin-only functions enforce admin access
                - Ownership checks prevent cross-user data access
+               - Server-only/internal functions are not exposed as public endpoints
+               - Structured, typed errors for conditions the client must distinguish
+                 (e.g. INSUFFICIENT_CREDITS, RATE_LIMITED)
+               - Environment checks are FAIL-CLOSED (an unknown environment is
+                 treated as production)
                - No secrets in code, no logging of sensitive data
                - Input validation on all user-provided data
 
@@ -83,33 +169,46 @@ jobs:
                - PII never appears in production logs
                - New data collection is minimal and justified
                - Visibility/permission settings are respected
+               - Any new user data has a path to deletion
                - Third-party data sharing is explicit and consensual
 
             3. **Error Handling (Fail Fast, Fail Loud)**
                - NEVER `catch (_e) {}` or `.catch(() => {})` — this hides bugs
                - Backend: prefer throwing; let the framework catch unhandled errors
-               - Frontend: graceful degradation is fine, BUT always report to error service
+               - Frontend: graceful degradation is fine, BUT always report to the
+                 error service AND tell the user
+               - A warning log is NOT error handling — only for non-error
+                 conditions (e.g. a disabled feature flag)
                - Ask: "If this fails in production, will we find out?"
 
             4. **Code Quality & Style**
                - No `any` types, use `import type` for type-only imports
                - Follow project formatting conventions
                - No `console.log` in production code
-               - No floating or misused promises
+               - No floating or misused promises — every Promise is awaited,
+                 returned, or explicitly voided
+               - Strict equality (`===`) except deliberate null comparisons
 
-            5. **Scalability & Performance**
+            5. **Schema & Data Model**
+               - Schema changes are backward compatible with existing data and
+                 deployed clients, and new query patterns have index coverage
+               - Shared validators/types are reused rather than redefined
+
+            6. **Scalability & Performance**
                - Database queries use indexes for large tables, not full scans
-               - Watch for N+1 patterns
+               - Watch for N+1 patterns: batch reads where possible
                - Rate limiting and cost controls are not bypassed
+               - Frontend: heavy work does not block the main thread
                - Bundle size: flag large new dependencies
 
-            6. **Testing**
+            7. **Testing**
                - New logic needs tests
                - NEVER mock internal code — only mock external services
                - Tests should exercise real code paths
                - Assertions are meaningful, not just `toBeDefined()`
+               - E2E: smoke-test level, failing on any JS error / console.error
 
-            7. **Documentation Accuracy**
+            8. **Documentation Accuracy**
                - If the PR touches code with associated docs, verify they still match
                - New public functions/APIs should have clear descriptions
                - Flag stale docs that reference removed or renamed code
@@ -123,16 +222,31 @@ jobs:
             ## REQUIRED: Maximum Fix Priority
 
             After all review items, you MUST end your review with a maximum fix
-            priority assessment.
+            priority assessment. This tells automation whether to launch a fix job.
 
-            Values:
+            **CRITICAL**: MAXIMUM_FIX_PRIORITY is the priority of the SINGLE
+            HIGHEST-SEVERITY item in your entire review. It is NOT the average,
+            NOT the most common, and NOT the last one you wrote about. It is the MAX.
+
+            1. List every issue you found and its individual severity.
+            2. Identify the SINGLE MOST SEVERE issue among all of them.
+            3. The MAXIMUM_FIX_PRIORITY is the priority of THAT issue alone.
+
+            Example: 9 trivial style nits (XLOW) and 1 missing auth check (HIGH)
+            → HIGH. Example: 5 LOW issues and 1 MEDIUM issue → MEDIUM, not LOW.
+
+            Values (from lowest to highest):
             - NONE — No issues need code changes. PR is good to merge as-is.
             - XLOW — Only trivial nits not worth an automated fix cycle.
             - LOW — Minor issues worth fixing but not blocking merge.
             - MEDIUM — Real issues (missing error handling, missing tests) to fix.
             - HIGH — Critical issues found (security, data leaks, broken logic).
 
-            You MUST end your review with EXACTLY one of these on its own line:
+            Before writing the final line, re-read ALL your review items and
+            confirm the priority matches the SINGLE MOST SEVERE one.
+
+            You MUST end your review with EXACTLY one of these on its own line
+            (no other text on the line, nothing after it):
 
             MAXIMUM_FIX_PRIORITY:NONE
             MAXIMUM_FIX_PRIORITY:XLOW
@@ -140,12 +254,29 @@ jobs:
             MAXIMUM_FIX_PRIORITY:MEDIUM
             MAXIMUM_FIX_PRIORITY:HIGH
 
-      - name: Check follow-up priority
-        id: check-followup
+            ${{ github.event_name == 'workflow_dispatch' && 'MANUAL RUN: this run was started by workflow_dispatch, so the action has no tracking comment to write your review into. When your review is final, post it yourself as ONE new comment on the PR numbered above: write the whole review to a file, in the same format and ending with the MAXIMUM_FIX_PRIORITY line, then run `gh pr comment <PR NUMBER> --body-file <that file>`. Post nothing else.' || '' }}
+
+      # If the review fails or is cancelled (including by timeout-minutes),
+      # append a failure banner to the tracking comment instead of leaving it
+      # stuck "in progress". The partial record is the best diagnostic.
+      - name: Mark tracking comment as failed on review failure
+        if: ${{ failure() || cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          RUN_ID: ${{ github.run_id }}
+          JOB_NAME: ${{ github.job }}
+          ACTION: mark-failed
+        run: .github/workflows/scripts/handle-tracking-comment-failure.sh
+
+      - name: Check follow-up priority
+        id: check-followup
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
           # The action's execution transcript is the most reliable source for
           # the just-posted priority (no comments-API propagation race).
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
@@ -155,12 +286,14 @@ jobs:
   # ─── Stage 2: Fix (only if review found issues worth fixing) ────────────────
   fix-review-issues:
     needs: review
-    # Run after review if it cleared the MAXIMUM_FIX_PRIORITY threshold, or
-    # directly on a "/claude-fix" comment.
+    # Run after review if it cleared the MAXIMUM_FIX_PRIORITY threshold, on a
+    # "/claude-fix" comment, or on workflow_dispatch with stage=fix. `always()`
+    # lets the manual paths fire even when the review job was skipped.
     if: |
       always() && (
         (needs.review.result == 'success' && needs.review.outputs.should_fix == 'true') ||
-        (github.event_name == 'issue_comment' && github.event.issue.pull_request && !endsWith(github.actor, '[bot]') && contains(github.event.comment.body, '/claude-fix') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request && !endsWith(github.actor, '[bot]') && contains(github.event.comment.body, '/claude-fix') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+        (github.event_name == 'workflow_dispatch' && inputs.stage == 'fix')
       )
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -176,90 +309,246 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Same reconcile as the review job — and this job is the more exposed
+      # one: it starts only after the review finishes, so its frozen
+      # `base.ref` has had longer to go stale.
+      - name: Reconcile the agent's trusted-config restore base
+        run: .github/workflows/scripts/reconcile-pr-base-ref.sh
+
       - name: Fix review issues
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
+          # The action refuses track_progress on workflow_dispatch.
+          track_progress: ${{ github.event_name != 'workflow_dispatch' }}
+          allowed_bots: 'claude[bot],app/claude,github-actions[bot]'
           claude_args: >-
             --dangerously-skip-permissions
             --model opus
-            --max-turns 250
+            --max-turns 350
             --append-system-prompt "If a CLAUDE.md file exists at the repo root, read and internalize it before starting work. It contains the project's coding standards and conventions. Treat it as authoritative."
 
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
             REVIEW FOLLOW-UP PRIORITY: ${{ needs.review.outputs.priority || 'MANUAL' }}
             MAXIMUM_FIX_PRIORITY (threshold): ${{ env.MAXIMUM_FIX_PRIORITY }}
 
-            ## CRITICAL INSTRUCTION: YOU ARE A FIXER, NOT A REVIEWER
+            ## YOUR JOB: MAKE THIS PR MERGEABLE
+
+            You have TWO INDEPENDENT, CO-EQUAL OBJECTIVES. BOTH must be
+            satisfied before you stop. Neither substitutes for the other.
+
+            **Objective A — CI failures: ALWAYS IN SCOPE, no threshold.**
+            If any CI check is failing (red, timed-out, or cancelled with no
+            newer green replacement), you MUST diagnose the failure from logs
+            and fix it. A red check is already blocking merge; fixing it is
+            not "expanding scope", it is the scope.
+
+            **Objective B — Review findings: IN SCOPE only at or above
+            MAXIMUM_FIX_PRIORITY (${{ env.MAXIMUM_FIX_PRIORITY }}).**
+            Fix every review finding rated ${{ env.MAXIMUM_FIX_PRIORITY }} or
+            higher. Do NOT fix — or "clean up", or "improve while you're in
+            the area" — any review finding BELOW that threshold. The scale,
+            highest to lowest, is HIGH > MEDIUM > LOW > XLOW. This scope rule
+            limits the REVIEW axis only; it does NOT limit Objective A.
+
+            Why the review threshold exists: every code change carries risk —
+            regressions, merge conflicts, review burden. Below-threshold
+            findings are captured for humans to consider; they are OUT OF
+            SCOPE for this automated job.
+
+            ## TWO SYMMETRIC FAILURE MODES — DO NOT FALL INTO EITHER
+
+            1. "CI is green, so the review is addressed." WRONG. CI does not
+               catch logic errors, security issues, missing error handling,
+               or architectural problems the review identified.
+            2. "No review findings meet the threshold, so there is nothing to
+               do." WRONG if CI is red. A clean review triage with red CI left
+               behind is a failed run.
+
+            Checking the threshold is NEVER an early exit for the whole job.
+
+            ## YOU ARE A FIXER, NOT A REVIEWER
 
             Your ONLY job is to **edit code, commit changes, and push fixes**.
-            You must NOT write a review. You must NOT post a comment listing
-            issues. If you finish without making any git commits, you have FAILED.
+            Do NOT write a review, post a comment listing issues, or suggest
+            changes for others to make. **Your output is CODE CHANGES.**
 
-            **Your output is CODE CHANGES, not commentary.**
+            ## Step 1: Gather BOTH primary inputs (MANDATORY)
 
-            ## Step 1: Read the review and understand EVERY issue (MANDATORY)
+            ### 1a — CI check status (Objective A)
 
-            **THIS IS YOUR PRIMARY INPUT. DO NOT SKIP THIS STEP.**
+            Run `gh pr checks $PR_NUMBER` and note every non-success check.
+            Red CI means a terminal `FAILURE`, `TIMED_OUT`, `ACTION_REQUIRED`,
+            or `CANCELLED` with no newer green replacement. For every red
+            check, read its logs and identify the root cause:
+            `gh run view <RUN_ID> --log-failed`.
 
-            Read ALL comments on this PR, especially from the code review.
-            The review contains numbered findings with severity levels.
-            You MUST fix every issue rated at or above the fix threshold
-            MAXIMUM_FIX_PRIORITY (${{ env.MAXIMUM_FIX_PRIORITY }}).
+            ### 1b — Review findings (Objective B)
 
-            **How to read the review:**
-            a) Use `gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"` to fetch all PR comments.
-            b) Look for the review comment with numbered findings.
-            c) For EACH finding rated at or above the threshold
-               (${{ env.MAXIMUM_FIX_PRIORITY }}), understand what file and line
-               it refers to, what the problem is, and what the fix should be.
+            a) Fetch all PR comments:
+               `gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"`.
+            b) Find the review comment with numbered findings and severities.
+            c) For EACH finding rated ${{ env.MAXIMUM_FIX_PRIORITY }} or above,
+               understand the file, the line, the problem, and the fix.
+            d) Make a checklist of in-scope findings. Explicitly list (and
+               skip) findings below the threshold.
 
-            **CRITICAL: "CI is green" does NOT mean the review is addressed.**
-            The review found problems that CI cannot detect. You MUST fix review
-            findings even when CI is green.
+            ### 1c — Build the combined work list
 
-            ## Step 2: Gather additional context
+            - **From CI:** every red check (no threshold filtering).
+            - **From review:** every finding rated ${{ env.MAXIMUM_FIX_PRIORITY }}
+              or higher.
 
-            a) **CI check failures** — run `gh pr checks $PR_NUMBER`. If any failed,
-               read their logs.
-            b) **Run quality gates yourself** — the project's lint, type check,
-               and test commands. Fix any failures first.
-            c) **The PR diff itself** — read the changed files for obvious bugs.
+            The list may be empty only if CI is fully green AND there are zero
+            in-scope review findings. In that case — and ONLY that case — you
+            may stop with no code changes.
 
-            ## Step 3: Fix everything
+            ## Step 2: Gather supporting context
 
-            **Make actual code changes.** Edit files. Write new test cases.
+            a) **Run the project's quality gates yourself NOW** (its lint, type
+               check, and test commands — see CLAUDE.md / AGENTS.md / the
+               package scripts). Failures join Objective A.
+            b) **Read the PR diff** for the context of each finding. Do NOT
+               expand scope to drive-by issues. The ONLY exception is a
+               problem the review missed that you judge to be at least
+               ${{ env.MAXIMUM_FIX_PRIORITY }} (a clear security hole, crash,
+               or data leak) — fix those at the same bar.
 
-            Rules:
-            - **Do NOT skip hard fixes.**
-            - **Tests are MANDATORY** if the review flagged missing tests.
-            - **Fix tests correctly.** NEVER delete or skip a test to make CI green.
+            ## Step 3: Fix everything in scope
+
+            - **Do NOT skip hard fixes within scope.** Difficult is exactly
+              why automation is fixing it.
+            - **Do NOT expand scope.** Below-threshold findings stay untouched.
+            - **Tests are MANDATORY** if the review flagged missing tests or
+              you changed logic that lacks coverage. Exercise real code; mock
+              only external service boundaries.
+            - **Fix tests correctly.** Implementation wrong → fix it. Test
+              wrong (bad assertion, outdated expectation) → fix the test.
+              NEVER weaken assertions or delete/skip a test to hide a real
+              bug. Flaky tests are a separate case — see below.
             - **Priority order:** security > correctness > performance > tests > style.
 
-            ## Step 4: Verify quality gates pass locally
+            ### Flaky-test handling (CI MUST end green)
 
-            Run the project's lint, type check, and test commands.
-            Do NOT push until all pass.
+            "Never delete a test to make CI green" applies to tests catching
+            real bugs. A FLAKY test — non-deterministic, unrelated to this
+            PR's diff, failing on timing, races, selector mismatches, or
+            network blips — blocks this PR and poisons every future one.
+
+            Diagnose before acting:
+            1. Can you tie the failure to code in THIS diff (`gh pr diff $PR_NUMBER`)?
+               If yes, it is real: fix the code, do NOT disable the test.
+            2. Does the same test fail intermittently on the default branch?
+               `gh run list --branch=main --limit=20` — mixed pass/fail there
+               means chronically flaky.
+            3. Classic flaky signatures: "Timeout", "element not found" after
+               a wait, "ECONNREFUSED", ordering-dependent assertions.
+
+            If your test runner already retries failures on CI, a reported
+            failure has flaked on every retry — do NOT push an empty commit to
+            "retry" it; that almost always reproduces the same failure.
+
+            Then, in order of preference:
+            a) **Rewrite the test to be deterministic (STRONGLY PREFERRED).**
+               Replace sleeps with explicit waits on visible state, wait on
+               the network response or navigation, use specific selectors
+               (roles / test ids) instead of fragile text matches.
+            b) **Disable or delete it** only if you cannot make it
+               deterministic. Commit with a message naming the test and the
+               failure signature, then post ONE PR comment with the test name
+               and file, the failure signature, the run IDs, and a
+               "TODO: reinstate or rewrite this test" note, so the reliability
+               debt stays visible.
+
+            Red CI is NEVER an acceptable terminal state. If you can neither
+            fix the real failure nor justify treating it as flaky, push
+            something (fix, revert, rewrite, or disable) that gets CI green.
+
+            ## Step 4: Verify the quality gates pass locally
+
+            Re-run the project's lint, type check, and test commands until all
+            pass. Do NOT push until they do.
 
             ## Step 5: Commit and push
 
-            - Each commit explains what was fixed and why.
-            - Push your commits to the PR branch.
+            - Each commit explains what was fixed and why; reference review
+              items where applicable (e.g. "fix item 3: add missing auth check").
+            - Push new commits to the PR branch. NEVER force-push or rewrite
+              history.
 
             ## Step 6: WAIT FOR CI AND FIX UNTIL GREEN (CRITICAL)
 
-            After pushing, monitor CI and iterate until ALL checks pass (max 3 iterations).
+            After pushing, monitor CI and iterate until ALL checks pass
+            (max 3 iterations):
+
+            ```
+            for iteration in 1, 2, 3:
+              1. Wait ~60 seconds for CI to start
+              2. gh pr checks $PR_NUMBER --watch --fail-fast
+                 (or poll every 60s with: gh pr checks $PR_NUMBER)
+              3. If ALL checks pass → done
+              4. Otherwise: read the failed logs (gh run view <RUN_ID> --log-failed),
+                 diagnose, fix, re-run the local gates, commit, push, continue
+            ```
+
+            "Flaky" or "unrelated to the PR" is NOT a stopping point — use the
+            flaky-test procedure above. After 3 iterations, only if the
+            remaining failure is genuinely outside code's reach (a platform
+            outage, a missing required secret), post a comment explaining what
+            you tried, what still fails, and why you could not work around it.
 
             ## Formatting rule
 
-            In commit messages and PR comments, NEVER use `#` followed by a number.
-            Use `item 1`, `item 3`, or `1.`, `3.` instead.
+            In commit messages and PR comments, NEVER use `#` followed by a
+            number (GitHub turns it into an issue link). Use `item 1`, `item 3`,
+            or `1.`, `3.` instead.
 
-            ## REMINDER — SUCCESS CRITERIA (ALL THREE REQUIRED)
+            ## SUCCESS CRITERIA (ALL REQUIRED)
 
-            1. You read the review and fixed every finding rated at or above ${{ env.MAXIMUM_FIX_PRIORITY }}
-            2. You pushed code fixes (not reviews or comments)
-            3. ALL CI checks are green
+            1. **Objective A:** ALL CI checks are green — or, if you made no
+               changes, they were already green when you started.
+            2. **Objective B:** every finding rated ${{ env.MAXIMUM_FIX_PRIORITY }}
+               or above is fixed, and NO finding below it was touched.
+            3. If you fixed anything, you pushed code commits (not comments).
+            4. Your final report states: CI status on arrival, the review
+               triage (in scope vs skipped), what you fixed on each axis, and
+               CI status at the end. A report that omits CI status is itself
+               a failure signal.
+
+      # If the fix job fails or is cancelled (including by timeout-minutes),
+      # append a failure banner (failed step, run conclusion, duration) to the
+      # fixer's tracking comment instead of leaving it stuck "in progress".
+      - name: Mark tracking comment as failed on fix failure
+        if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          RUN_ID: ${{ github.run_id }}
+          JOB_NAME: ${{ github.job }}
+          ACTION: mark-failed
+        run: .github/workflows/scripts/handle-tracking-comment-failure.sh
+
+      # Dispatch CI on the PR branch the fixer just pushed to. Pushes made by a
+      # bot token may not fire `pull_request: synchronize`, and empty-commit
+      # retriggers are unreliable for the same reason, so dispatch directly.
+      # Needs CLAUDE_PAT (actions:write); without it the dispatch is skipped.
+      - name: Trigger CI workflows
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.CLAUDE_PAT || github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          # Customize: your CI workflow filenames (must accept workflow_dispatch).
+          WORKFLOWS: 'ci.yml'
+        run: |
+          set -euo pipefail
+          BRANCH=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json headRefName -q .headRefName 2>/dev/null || echo "")
+          if [[ -z "${BRANCH}" ]]; then
+            echo "Could not resolve branch for PR ${PR_NUMBER}; skipping."
+            exit 0
+          fi
+          export BRANCH
+          .github/workflows/scripts/trigger-ci-workflows.sh
