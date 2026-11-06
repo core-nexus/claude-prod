@@ -113,7 +113,7 @@ body verbatim**, prepending a short note:
 > Fresh single-commit reset of #OLD, squashed onto the latest default branch so
 > the full commit-hook gate runs over the whole diff. Supersedes #OLD.
 
-Create it ready for review, not a draft.
+Mirror any PR template the same way the old PR did. Create it ready for review, not a draft.
 
 ### 5. Close the old PR and cross-link
 
