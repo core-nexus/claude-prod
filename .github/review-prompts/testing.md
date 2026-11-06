@@ -37,7 +37,9 @@ Focus on real code execution over mocking.
 - [ ] **No `vi.fn()` / `jest.fn()` replacing internal functions**: If a test
       replaces a real function from your codebase with a mock, that's a red flag
 - [ ] **Real database/backend testing**: Tests should exercise real data operations,
-      not mocked data layers
+      not mocked data layers (an in-memory or test instance of the real backend)
+- [ ] **Real auth testing**: Authenticated scenarios run through the real auth
+      path with a test identity, not a mocked auth module
 
 ### Test Quality
 
@@ -59,7 +61,7 @@ Focus on real code execution over mocking.
 - [ ] Tests mirror source structure
 - [ ] Shared test helpers are in appropriate utility files
 - [ ] Test data setup is clear and minimal
-- [ ] No test pollution: each test is independent
+- [ ] No test pollution: each test is independent and cleans up after itself
 
 ### E2E Tests
 

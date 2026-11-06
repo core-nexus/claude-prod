@@ -1,17 +1,49 @@
 name: Automated Codebase Review
 
-# Two-stage pipeline: review → fix (if MEDIUM+ priority).
-# Weekly deep-dive reviews across 15 focus areas, all running Sunday at 06:00 UTC.
-# Each review analyzes the full codebase for its focus area, then the
-# fix stage creates a PR with actual code changes.
+# Two-stage pipeline: review → fix (if the review meets MAXIMUM_FIX_PRIORITY).
+# Deep-dive reviews across 18 focus areas (one prompt per area in
+# .github/review-prompts/). Each review analyzes the full codebase for its
+# focus area (except `architecture`, which reviews the last 30 days of
+# changes), then the fix stage creates a PR with actual code changes.
 #
-# Schedule: Every Sunday at 06:00 UTC — all areas run simultaneously.
+# Schedule: adaptive, not a fixed rotation. The cron fires once a day and
+# scripts/resolve-review-area.sh decides which area(s) are DUE on that run.
+# For each area it reads GitHub state (recent `review(<area>):` issues/PRs and
+# whether a review PR merged) and picks an interval from a three-tier cadence:
+# fast after you merge a review PR (weekly; daily for the revenue-critical
+# areas e-commerce and billing-integrity), slower (monthly / weekly) while the
+# latest review sits unmerged, and a dormant floor (quarterly / monthly) once
+# an area has had no merge for 60 days. Merging a review PR re-engages the
+# area and snaps it back to the fast cadence. If nothing is due, the resolver
+# emits an empty matrix and the review job is skipped. See the resolver header
+# for the full model. On the very first scheduled run every area is due.
+#
 # Manual: workflow_dispatch to run any single area or all areas on demand.
+#
+# Setup:
+#   Secrets:
+#     CLAUDE_CODE_OAUTH_TOKEN  (required) Claude Code plan token.
+#     SLACK_WEBHOOK_URL        (optional) incoming-webhook URL for failure
+#                              alerts; without it failures are only annotated.
+#   Label: `auto-review` must exist (gh label create auto-review ...).
+#   Knobs:
+#     - Uncomment the `schedule:` cron below to enable the adaptive schedule.
+#     - MAXIMUM_FIX_PRIORITY (env, below) — fix-stage threshold.
+#     - Areas: add/remove a prompt in .github/review-prompts/ and keep three
+#       lists in sync — the `options:` list below, DAILY_AREAS/WEEKLY_AREAS in
+#       scripts/resolve-review-area.sh, and the lists in
+#       scripts/resolve-review-area.test.sh (the test fails if they drift).
+#     - WORKFLOWS in the "Trigger CI workflows" step — your CI workflow
+#       filenames, so the fix PR gets checks (see trigger-ci-workflows.sh).
+#     - The fix stage's quality-gate commands come from your CLAUDE.md /
+#       AGENTS.md; state your lint, type-check, and test commands there.
 
 on:
-  # commented out so that this exaple workflow doesn't run automatically
+  # Commented out so this example workflow doesn't run automatically.
+  # Uncomment to enable the adaptive schedule (the resolver still decides
+  # which area(s) are actually due on each run).
   # schedule:
-  #   - cron: '0 6 * * 0'  # Every Sunday at 06:00 UTC
+  #   - cron: '0 8 * * *'  # Once a day at 08:00 UTC
   workflow_dispatch:
     inputs:
       review_area:
@@ -19,38 +51,59 @@ on:
         required: true
         type: choice
         options:
-          - security
-          - privacy
-          - compliance
           - ai-compliance
-          - error-handling
-          - code-quality
-          - performance
-          - testing
-          - documentation
-          - dependency-health
-          - correctness
-          - e-commerce
-          - infrastructure
           - architecture
+          - billing-integrity
+          - code-quality
+          - compliance
+          - correctness
+          - dependency-health
+          - documentation
+          - e-commerce
+          - error-handling
+          - infrastructure
+          - performance-client
+          - performance-server
+          - privacy
           - resilience
+          - scalability
+          - security
+          - testing
           - all
 
 concurrency:
   group: codebase-review-${{ inputs.review_area || github.run_id }}
   cancel-in-progress: false
 
+# ─── Fix-threshold parameter ────────────────────────────────────────────────
 # MAXIMUM_FIX_PRIORITY is the MINIMUM review severity at which the fix stage
-# runs automatically. Findings below it are left in the review issue for a
-# human. Valid values: HIGH, MEDIUM, LOW, XLOW. Default MEDIUM = auto-fix real
-# issues but leave minor/LOW findings for human judgment.
+# runs AND the minimum severity the fixer is allowed to touch. Reviews use a
+# five-level scale (NONE, XLOW, LOW, MEDIUM, HIGH). A review whose single
+# highest-severity finding is at or above this threshold triggers a fix;
+# findings below the threshold are out of scope for automated fixes and stay
+# in the review issue for a human. Valid values: HIGH, MEDIUM, LOW, XLOW.
+#
+# Default MEDIUM: don't spend a fix cycle (and its inherent risk) on LOW/XLOW
+# findings. Changing this value adjusts both stages at once.
 env:
   MAXIMUM_FIX_PRIORITY: MEDIUM
+
+# Default to least-privilege. Jobs that need more declare their own
+# permissions block, which overrides this default.
+permissions:
+  contents: read
 
 jobs:
   # ─── Determine which review area(s) to run ─────────────────────────────────
   determine-area:
     runs-on: ubuntu-latest
+    # The resolver reads review issue/PR state via `gh` to decide which
+    # area(s) are due, so it needs read access to issues and pull requests.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     outputs:
       areas_json: ${{ steps.resolve.outputs.areas_json }}
     steps:
@@ -63,10 +116,13 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_REVIEW_AREA: ${{ inputs.review_area }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
 
   # ─── Stage 1: Review ───────────────────────────────────────────────────────
   review:
     needs: determine-area
+    if: needs.determine-area.outputs.areas_json != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -87,7 +143,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # Full history so reviews that look at recent changes (e.g.
+          # `architecture`, which scopes itself to the last 30 days) have
+          # something to `git log` against.
+          fetch-depth: 0
 
       - name: Review codebase — ${{ matrix.area }}
         id: review
@@ -103,7 +162,7 @@ jobs:
             REPO: ${{ github.repository }}
             REVIEW AREA: ${{ matrix.area }}
 
-            ## Stage 1: Automated Weekly Codebase Review — ${{ matrix.area }}
+            ## Stage 1: Automated Codebase Review — ${{ matrix.area }}
 
             You are performing a scheduled deep-dive review of the ENTIRE codebase
             focused on **${{ matrix.area }}**. This is NOT a PR review — you are
@@ -124,7 +183,8 @@ jobs:
 
             Methodically review the relevant parts of the codebase against your
             criteria. Be THOROUGH. This is a deep dive, not a surface scan. Read
-            actual code, trace data flows, check real implementations.
+            actual code, trace data flows, check real implementations. Open
+            files, read them, follow the logic.
 
             ### Step 3: Write your findings
 
@@ -141,11 +201,7 @@ jobs:
 
             Label the issue with: `auto-review`
 
-            **After creating the issue**, search for any other OPEN issues
-            with the `auto-review` label whose title starts with
-            `review(${{ matrix.area }}):` (excluding the one you just created).
-            If you find any, close them with a comment linking to the new issue:
-            `Superseded by #<new-issue-number>.`
+            Do NOT attempt to close older issues — a post-step handles that.
 
             If the review is clean with no findings, title the issue:
             `review(${{ matrix.area }}): clean — YYYY-MM-DD`
@@ -159,14 +215,33 @@ jobs:
             ## REQUIRED: Maximum Fix Priority
 
             After all findings, you MUST end the issue body with a maximum fix
-            priority assessment.
+            priority assessment. This tells automation whether to launch a fix job.
 
-            Values:
+            **CRITICAL — READ CAREFULLY**: The MAXIMUM_FIX_PRIORITY is the priority
+            of the SINGLE HIGHEST-SEVERITY finding in your entire review. It is NOT
+            the average, NOT the most common, and NOT the lowest. It is the MAX.
+
+            Procedure:
+            1. List every finding you reported and its individual severity.
+            2. Identify the SINGLE MOST SEVERE finding among all of them.
+            3. The MAXIMUM_FIX_PRIORITY is the priority of THAT finding alone.
+
+            Example: 9 trivial style nits (XLOW) and 1 missing auth check (HIGH)
+            → HIGH. Example: 5 LOW issues and 1 MEDIUM issue → MEDIUM, not LOW.
+
+            WARNING: A common mistake is to set this to the priority of the
+            MAJORITY of findings or the LAST finding you wrote about. Do NOT.
+
+            Values (from lowest to highest):
             - NONE — No issues found. Codebase is clean for this area.
             - XLOW — Only trivial nits not worth an automated fix cycle.
             - LOW — Minor issues worth fixing but not urgent.
-            - MEDIUM — Real issues that should be fixed.
+            - MEDIUM — Real issues (missing error handling, missing tests,
+              scalability concerns) that should be fixed.
             - HIGH — Critical issues (security holes, data leaks, broken logic).
+
+            Before writing the final line, re-read ALL your findings and confirm
+            that the priority matches the SINGLE MOST SEVERE one.
 
             You MUST end the issue body with EXACTLY one of these on its own line:
 
@@ -186,6 +261,14 @@ jobs:
           MAXIMUM_FIX_PRIORITY: ${{ env.MAXIMUM_FIX_PRIORITY }}
         run: .github/workflows/scripts/extract-review-priority.sh
 
+      - name: Close superseded review issues
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REVIEW_AREA: ${{ matrix.area }}
+        run: .github/workflows/scripts/close-superseded-reviews.sh
+
   # ─── Stage 2: Fix (only if the review cleared MAXIMUM_FIX_PRIORITY) ─────────
   fix:
     needs: [determine-area, review]
@@ -200,7 +283,9 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      actions: read
+      # `actions: write` lets the "Trigger CI workflows" step dispatch CI on
+      # the fix branch (pushes made with GITHUB_TOKEN don't trigger workflows).
+      actions: write
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -226,6 +311,27 @@ jobs:
             REPO: ${{ github.repository }}
             REVIEW AREA: ${{ matrix.area }}
             REVIEW PRIORITY: ${{ needs.review.outputs.priority }}
+            MAXIMUM_FIX_PRIORITY (threshold): ${{ env.MAXIMUM_FIX_PRIORITY }}
+
+            ## ABSOLUTE SCOPE RULE: THRESHOLD IS ${{ env.MAXIMUM_FIX_PRIORITY }}
+
+            You MUST fix ONLY findings rated **${{ env.MAXIMUM_FIX_PRIORITY }}
+            or higher**. You MAY NOT fix — or "clean up", or "improve while
+            you're in the area" — any finding rated BELOW
+            ${{ env.MAXIMUM_FIX_PRIORITY }}. This is a hard rule with no
+            exceptions.
+
+            Why: every code change, however small, carries risk — regressions,
+            merge conflicts, review burden, surprising behavior changes. That
+            cost is paid only for findings important enough to justify it.
+            Lower-severity findings stay in the review issue for humans.
+
+            The scale, highest to lowest, is HIGH > MEDIUM > LOW > XLOW. With a
+            MEDIUM threshold, fix HIGH and MEDIUM only; leave LOW and XLOW
+            untouched. With a LOW threshold, also fix LOW; still leave XLOW.
+
+            If you're tempted to fix a below-threshold item because it "seems
+            easy", STOP. Skip it. That is the correct behavior.
 
             ## CRITICAL INSTRUCTION: YOU ARE A FIXER, NOT A REVIEWER
 
@@ -244,19 +350,34 @@ jobs:
                `review(${{ matrix.area }}): findings —` and read its full body.
                This contains every finding with file, line, and suggested fix.
             b) **The review criteria** — Read `.github/review-prompts/${{ matrix.area }}.md`
+               for the checklist that was used. If the issue has a
+               `Hotspot map updates` section and the prompt has a Known Hotspot
+               Map, apply those map edits in this same PR.
             c) **Project standards** — Read `CLAUDE.md` (if it exists).
-            d) **Your own exploration** — Read the changed files. If you spot
-               obvious issues beyond what the review found, fix those too.
+            d) **Your own exploration** — Read the files the review points at
+               so you understand the context. Do NOT expand scope: leave
+               additional below-threshold issues and unrelated nits alone. The
+               ONLY exception is a finding you judge to be at least
+               ${{ env.MAXIMUM_FIX_PRIORITY }} severity that the review missed
+               (a clear security hole, crash bug, or data leak) — those you may
+               fix, at the same threshold bar.
 
-            ## Step 2: Fix everything
+            ## Step 2: Fix the in-scope findings
 
             **Make actual code changes.** Edit files. Write new test cases.
-            Fix every finding from the review issue.
+            Fix every finding from the review issue that is rated
+            ${{ env.MAXIMUM_FIX_PRIORITY }} or higher. Skip every finding rated
+            below ${{ env.MAXIMUM_FIX_PRIORITY }}.
 
             Rules:
-            - **Do NOT skip hard fixes.**
+            - **Do NOT skip hard fixes within scope.** If an in-scope finding
+              is difficult, that's exactly why automation exists.
+            - **Do NOT expand scope.** No below-threshold fixes and no
+              unrelated improvements, even ones that "seem easy".
             - **Tests are MANDATORY** if findings flagged missing tests, or
-              if you changed logic that lacks test coverage.
+              if you changed logic that lacks test coverage. Exercise real
+              code; only mock external service boundaries (third-party API
+              SDKs, `fetch` to external hosts).
             - **Fix tests correctly.** If a test fails:
               - Is the implementation wrong? Fix the implementation.
               - Is the test wrong? Fix the test.
@@ -264,10 +385,11 @@ jobs:
               - NEVER weaken assertions to make a test pass.
             - **Priority order:** security > correctness > performance > tests > style.
 
-            ## Step 3: Verify quality gates pass
+            ## Step 3: Verify ALL quality gates pass
 
             After making fixes, run the project's lint, type check, and test
-            commands. Fix any failures. Repeat until they all pass.
+            commands (see CLAUDE.md / AGENTS.md / package scripts). Fix any
+            failures. Repeat until they all pass.
 
             Do NOT push until all quality gates pass.
 
@@ -276,6 +398,8 @@ jobs:
             1. Create branch: `review/${{ matrix.area }}-YYYY-MM-DD`
                (replace YYYY-MM-DD with today's date)
             2. Each commit message should explain what was fixed and why.
+               Reference finding numbers where applicable (e.g. "fix item 3:
+               add missing auth check in updateProfile").
             3. Push: `git push -u origin HEAD`
             4. Open a PR:
                - Title: `review(${{ matrix.area }}): weekly codebase review fixes`
@@ -283,11 +407,7 @@ jobs:
                - Body: summary of what was fixed, organized by severity,
                  referencing the review issue. End with:
                  `Automated fix by codebase-review workflow`
-            5. **After opening the PR**, search for any other OPEN pull requests
-               with the `auto-review` label whose title starts with
-               `review(${{ matrix.area }}):` (excluding the one you just created).
-               If you find any, close them with a comment linking to the new PR:
-               `Superseded by #<new-pr-number>.`
+            5. Do NOT attempt to close older PRs — a post-step handles that.
 
             ## Formatting rule
 
@@ -297,28 +417,49 @@ jobs:
 
             ## REMINDER: You succeed by pushing code fixes, not by writing reviews.
 
-      # Trigger CI on the new PR branch (customize workflow names for your project)
+      - name: Close superseded review PRs
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REVIEW_AREA: ${{ matrix.area }}
+        run: .github/workflows/scripts/close-superseded-reviews.sh
+
+      # Trigger CI on the new PR branch. Set WORKFLOWS to your CI workflow
+      # filenames (space-separated), e.g. "ci.yml e2e.yml".
       - name: Trigger CI workflows
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          # WORKFLOWS: ci.yml
         run: |
           export BRANCH="review/${{ matrix.area }}-$(date -u +%Y-%m-%d)"
           .github/workflows/scripts/trigger-ci-workflows.sh
 
-  # ─── Notify on failure (configure your notification channel) ────────────────
+  # ─── Notify on failure ──────────────────────────────────────────────────────
+  # Scheduled runs are invisible unless someone checks the Actions tab, so a
+  # failure posts to Slack when SLACK_WEBHOOK_URL is set (and is always
+  # annotated). One dedicated job, not a per-matrix step, so a multi-area
+  # failure sends one message.
   notify:
     needs: [review, fix]
-    if: always() && github.event_name != 'pull_request' && (needs.review.result == 'failure' || needs.fix.result == 'failure')
+    if: always() && github.ref == 'refs/heads/main' && (needs.review.result == 'failure' || needs.fix.result == 'failure')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
-      - name: Notify on failure
+      - name: Notify Slack on failure
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v4
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: ":rotating_light: Codebase review failed (${{ github.event_name }}): review=${{ needs.review.result }}, fix=${{ needs.fix.result }}. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Annotate failure
         run: |
           echo "::warning::Codebase review workflow failed. Review: ${{ needs.review.result }}, Fix: ${{ needs.fix.result }}"
-          echo ""
-          echo "To add Slack notifications, replace this step with:"
-          echo "  uses: slackapi/slack-github-action@v3.0.1"
-          echo "  with:"
-          echo "    webhook: \${{ secrets.SLACK_WEBHOOK_URL }}"
-          echo "    webhook-type: incoming-webhook"
+          echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

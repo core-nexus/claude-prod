@@ -25,6 +25,17 @@ and protected throughout the codebase.
 ### Data Access Patterns
 
 - [ ] Queries return only the fields the client actually needs
+- [ ] **The projection boundary holds.** Identify the canonical
+      "scrub before return" helper for user records (strips tokens,
+      payment-provider ids, contact details) and verify EVERY query that returns
+      a user row either is the caller's own profile or projects only public-safe
+      fields — never spreads the whole record
+- [ ] Fields derived from sensitive data (e.g. computed from date of birth,
+      precise location, or health inputs) are gated as strictly as the source
+      fields, or they re-expose them
+- [ ] Owner-only reads (precise locations, private pins, contact lookups) are
+      gated to the owner/admin, and lookups by email/phone can't be used to
+      enumerate accounts
 - [ ] User data is not leaked through:
   - Overly broad query results
   - Error messages that include other users' data
@@ -64,6 +75,36 @@ and protected throughout the codebase.
 - [ ] Soft-deleted data has a hard-delete schedule or process
 - [ ] Session data, tokens, and temporary records have expiration
 - [ ] Log retention policies are appropriate for the data sensitivity
+
+## Known Hotspot Map (LIVING — keep this current)
+
+> A code-grounded map of where **PII actually lives and leaves** the system in THIS repo, with `file:line` anchors. A
+> generic checklist rots; a map that points at the real PII fields and the safe-projection boundary compounds every run —
+> an insight not written back here is lost. Keep it reading true against the
+> default branch.
+>
+> **Maintaining the map depends on which stage you are:**
+>
+> - **Review stage (read-only — you do NOT edit files or open PRs):** do not edit
+>   this file. Record every new/changed/cleared hotspot in your findings issue
+>   under a `Hotspot map updates` heading (with `file:line`, why it matters, and
+>   the exact edit you'd make) so the fixer can apply it verbatim.
+> - **Fix stage / manual PRs (you DO edit files):** apply those edits here in the
+>   same PR — add new spots (`STATUS: open`), flip resolved ones
+>   (`STATUS: fixed (<PR/date>)`), clear false alarms
+>   (`STATUS: cleared (<reason>)`), and re-anchor drifted line numbers. Stale
+>   `file:line` anchors are worse than none.
+
+_Empty until the first review seeds it. One entry per hotspot:_
+
+```markdown
+- **`path/to/file.ext:123` `functionName` — what it is and why it matters.**
+  What to re-check on every run. STATUS: open | fixed (<PR/date>) | cleared (<reason>)
+```
+
+Seed it with: the tables/columns that hold PII, the safe-projection helper and
+the queries that must use it, owner-gated read paths, admin-only PII surfaces
+(and their gate), and every third-party service PII is sent to.
 
 ## Severity Guide
 

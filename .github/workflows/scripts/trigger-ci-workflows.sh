@@ -22,6 +22,7 @@ WORKFLOWS="${WORKFLOWS:-ci.yml checks.yml test.yml}"
 echo "Triggering CI workflows on branch: ${BRANCH}"
 for workflow in ${WORKFLOWS}; do
   echo "  -> ${workflow}"
-  gh workflow run "${workflow}" --ref "${BRANCH}" --repo "${REPO}" 2>/dev/null \
-    || echo "  Skipped: ${workflow} (not found or not dispatchable)"
+  # stderr is left visible so a permissions or typo failure is diagnosable.
+  gh workflow run "${workflow}" --ref "${BRANCH}" --repo "${REPO}" \
+    || echo "::warning::Failed to trigger ${workflow} (not found, not dispatchable, or no permission)"
 done
