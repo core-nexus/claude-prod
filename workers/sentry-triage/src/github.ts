@@ -1,5 +1,5 @@
 import type { Normalized, ProjectConfig } from './types.js'
-import { fitClientPayload } from './payload.js'
+import { buildClientPayload, fitClientPayload } from './payload.js'
 
 export type DispatchInput = {
   token: string
@@ -24,10 +24,7 @@ export async function dispatchToGitHub(input: DispatchInput): Promise<DispatchRe
   // GitHub caps client_payload at 10 top-level properties. Keep shortId at
   // top-level (the workflow's GitHub Actions expressions read it directly)
   // and stuff everything else into a stringified JSON `data` field.
-  const clientPayload = {
-    shortId: fitted.shortId,
-    data: JSON.stringify(fitted),
-  }
+  const clientPayload = buildClientPayload(fitted)
   const body = JSON.stringify({
     event_type: projectConfig.eventType,
     client_payload: clientPayload,

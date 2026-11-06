@@ -23,6 +23,25 @@ export type Breadcrumb = {
   timestamp: string | null
 }
 
+export type SentryRequest = {
+  url: string | null
+  method: string | null
+  queryString: string | null
+}
+
+export type SentryUser = {
+  id: string | null
+  username: string | null
+  email: string | null
+  ipAddress: string | null
+  geo: Record<string, string> | null
+}
+
+export type Sdk = {
+  name: string | null
+  version: string | null
+}
+
 export type Normalized = {
   projectSlug: string
   orgSlug: string
@@ -30,19 +49,24 @@ export type Normalized = {
   issueId: string
   title: string
   culprit: string | null
+  message: string | null
   level: Level
   platform: string
   environment: string | null
   release: string | null
+  transaction: string | null
+  serverName: string | null
   firstSeen: string | null
   lastSeen: string | null
   count: number | null
   userCount: number | null
   issueType: string | null
   issueCategory: string | null
+  isUnhandled: boolean | null
   sentryIssueUrl: string
   sentryEventUrl: string | null
   sentryApiEventUrl: string | null
+  sentryApiIssueUrl: string | null
   latestEventId: string | null
   triggeredRule: string | null
   trigger: Trigger
@@ -50,6 +74,12 @@ export type Normalized = {
   topFrames: Frame[]
   breadcrumbs: Breadcrumb[]
   tags: Record<string, string>
+  request: SentryRequest | null
+  user: SentryUser | null
+  contexts: Record<string, Record<string, string>>
+  sdk: Sdk | null
+  fingerprint: string[]
+  extra: Record<string, string>
   dispatchId: string
 }
 

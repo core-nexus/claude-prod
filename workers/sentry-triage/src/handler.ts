@@ -1,10 +1,11 @@
 import { parseProjectMap, isTruthy } from './config.js'
 import { verifySentryWebhook } from './signature.js'
 import { normalize } from './normalize.js'
-import { filter } from './filter.js'
+import { filter, isSelfReport } from './filter.js'
 import { checkSeen, markSeen } from './dedup.js'
 import { dispatchToGitHub } from './github.js'
 import { createLogger } from './log.js'
+import { reportToSentry, type SelfReport } from './selfReport.js'
 import type { Decision, Env } from './types.js'
 
 const SUPPORTED_RESOURCES = new Set(['event_alert', 'issue', 'metric_alert'])
@@ -41,6 +42,10 @@ export async function handleRequest(
   const url = new URL(request.url)
   const requestId = uuid(deps.randomUUID)
   const startedAt = deps.now ? deps.now() : Date.now()
+  const reportFailure = (report: SelfReport): void => {
+    const p = reportToSentry(env.SENTRY_DSN, report, deps.fetchFn)
+    ctx?.waitUntil(p)
+  }
 
   if (url.pathname === '/health' && request.method === 'GET') {
     return new Response('ok', { status: 200 })
@@ -111,14 +116,6 @@ export async function handleRequest(
     return new Response('bad request', { status: 400 })
   }
 
-  let projectMap
-  try {
-    projectMap = parseProjectMap(env.PROJECT_MAP)
-  } catch (err) {
-    log('error', { requestId, decision: 'rejected', reason: 'bad_project_map', err: (err as Error).message })
-    return new Response('server misconfigured', { status: 500 })
-  }
-
   const redactPii = isTruthy(env.REDACT_PII, true)
   const allowWarningsGlobal = isTruthy(env.ALLOW_WARNINGS_GLOBAL, false)
   const dispatchId = uuid(deps.randomUUID)
@@ -135,6 +132,22 @@ export async function handleRequest(
   }
 
   const n = norm.data
+  // Drop echoes of our own reports before anything below can fail and report
+  // again (a broken PROJECT_MAP would otherwise re-report on every echo).
+  if (isSelfReport(n)) {
+    log('info', { requestId, dispatchId, decision: 'filtered', reason: 'self_report' })
+    return jsonResponse(200, { dispatchId, status: 'filtered', reason: 'self_report' })
+  }
+
+  let projectMap
+  try {
+    projectMap = parseProjectMap(env.PROJECT_MAP)
+  } catch (err) {
+    log('error', { requestId, decision: 'rejected', reason: 'bad_project_map', err: (err as Error).message })
+    reportFailure({ reason: 'bad_project_map', detail: (err as Error).message, extra: { requestId } })
+    return new Response('server misconfigured', { status: 500 })
+  }
+
   const projectConfig = projectMap[n.projectSlug]
   const filterResult = filter({
     normalized: n,
@@ -175,6 +188,7 @@ export async function handleRequest(
       decision: 'rejected',
       reason: 'no_github_credentials',
     })
+    reportFailure({ reason: 'no_github_credentials', detail: 'GITHUB_PAT is not set', extra: { requestId, dispatchId } })
     return new Response('server misconfigured', { status: 500 })
   }
 
@@ -194,6 +208,20 @@ export async function handleRequest(
       ghBody: dispatch.body.slice(0, 500),
       projectSlug: n.projectSlug,
       shortId: n.shortId,
+    })
+    reportFailure({
+      reason: 'github_dispatch_failed',
+      detail: `GitHub ${dispatch.status}`,
+      fingerprintExtra: String(dispatch.status),
+      extra: {
+        requestId,
+        dispatchId,
+        ghStatus: dispatch.status,
+        ghBody: dispatch.body.slice(0, 500),
+        repo: projectConfig!.repo,
+        projectSlug: n.projectSlug,
+        shortId: n.shortId,
+      },
     })
     return jsonResponse(502, { dispatchId, status: 'rejected', reason: 'github_dispatch_failed' })
   }

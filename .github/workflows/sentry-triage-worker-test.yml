@@ -1,0 +1,91 @@
+name: Sentry Triage Worker Tests
+
+# CI for the Sentry triage bridge: typechecks and unit-tests the Cloudflare
+# Worker in `workers/sentry-triage/`, verifies it bundles (`wrangler deploy
+# --dry-run`, which publishes nothing and needs no Cloudflare credentials),
+# and runs the tests for the shell gate `sentry-triage.yml` uses.
+#
+# NOT to be confused with `sentry-triage.yml`, which is the *downstream*
+# consumer: the Worker validates Sentry webhooks and fires a
+# `repository_dispatch`, and `sentry-triage.yml` is what that dispatch wakes up.
+#
+# Setup: none. No secrets are needed. Copy this file alongside
+# `workers/sentry-triage/` and adjust the paths below if you vendor the Worker
+# somewhere else. The Worker keeps its own package.json + package-lock.json
+# (npm), so `paths:` keeps this job off unrelated PRs.
+#
+# Deploying is deliberately left out. If you want CI to deploy on merge, add a
+# job gated on `github.event_name == 'push' && github.ref == 'refs/heads/main'`
+# that runs `npm run deploy` with CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
+# secrets, pin `account_id` in wrangler.toml so a mis-set account fails the
+# deploy, and add a notify-on-failure step (a push-to-main job is invisible
+# otherwise).
+
+on:
+  pull_request:
+    paths:
+      - workers/sentry-triage/**
+      - .github/workflows/sentry-triage-worker-test.yml
+      - .github/workflows/scripts/check-sentry-mcp-connected*.sh
+  push:
+    branches:
+      - main
+    paths:
+      - workers/sentry-triage/**
+      - .github/workflows/sentry-triage-worker-test.yml
+      - .github/workflows/scripts/check-sentry-mcp-connected*.sh
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+# Default to least-privilege.
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: workers/sentry-triage
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: workers/sentry-triage/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Builds exactly what `deploy` would, without publishing. Catches a
+      # broken deploy (bad wrangler.toml, unresolvable import) on the PR
+      # rather than after merge; the unit tests never exercise the bundler.
+      - name: Verify deploy build
+        run: npm run deploy:dry-run
+
+  workflow-scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run check-sentry-mcp-connected.sh tests
+        run: bash .github/workflows/scripts/check-sentry-mcp-connected.test.sh

@@ -15,6 +15,11 @@
       "userCount": 1,
       "type": "error",
       "issueCategory": "error",
+      "isUnhandled": true,
+      "metadata": {
+        "type": "TypeError",
+        "value": "Cannot read properties of undefined"
+      },
       "permalink": "https://acme.sentry.io/organizations/acme/issues/1234567890/",
       "project": {
         "id": 100,

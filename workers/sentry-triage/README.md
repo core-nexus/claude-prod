@@ -11,13 +11,41 @@ The Worker is a thin bridge. It does not run Claude itself.
 1. Validates the incoming request (method, content-type, size, headers, HMAC
    signature, timestamp freshness).
 2. Normalizes Sentry's two main webhook shapes (`event_alert`, `issue`) into a
-   single `Normalized` payload.
+   single `Normalized` payload. It forwards as much context as fits: exception,
+   stack frames, breadcrumbs, all non-secret tags, request/user/contexts/SDK,
+   fingerprint, and `extra` — plus aggregate stats (`count`, `userCount`,
+   `firstSeen`) whenever Sentry includes them. Aggregate counts are absent from
+   `event_alert` webhooks, so a `sentryApiIssueUrl` is always included for the
+   downstream workflow to fetch exact frequency/affected-user numbers.
 3. Filters out noise: unknown projects, non-error levels (unless opted in),
    assigned/archived/ignored lifecycle events, recently-seen issues.
 4. Fires `POST /repos/{owner}/{repo}/dispatches` with the normalized payload as
    `client_payload` (progressively shrunk to fit GitHub's 10 KB limit).
 5. Records the dispatch in KV so a flapping alert rule cannot double-dispatch
    within 24 h. Regressions bypass dedup.
+
+## Reporting its own failures
+
+A 502 back to Sentry is not an error to Cloudflare, so a broken dispatch is
+otherwise silent: an expired `GITHUB_PAT` can make every dispatch fail for weeks
+without anyone noticing. The Worker therefore posts an error event to
+`SENTRY_DSN` (via `ctx.waitUntil`, so the response is not delayed) when:
+
+- GitHub answers the dispatch with a non-2xx (`github_dispatch_failed`, with the
+  GitHub status and the first 500 chars of its body — never the token);
+- `GITHUB_PAT` is missing (`no_github_credentials`);
+- `PROJECT_MAP` does not parse (`bad_project_map`);
+- anything throws out of the handler (`unhandled_exception`).
+
+Without `SENTRY_DSN` these are only `level: "error"` log lines, plus a
+`sentry_dsn_unset` line saying the failure was not reported.
+
+The report lands in the same Sentry project whose alert rule calls this Worker,
+so it comes straight back as a webhook. Every self-report is a message starting
+with `[sentry-triage]` and tagged `sentry_triage.self_report=true`; the filter
+drops anything carrying either (`reason: "self_report"`), so an echo is never
+dispatched and can never fail into another report. A fixed fingerprint
+(`sentry-triage` + reason [+ GitHub status]) groups repeats into one issue.
 
 ## HTTP surface
 
@@ -37,7 +65,10 @@ Secrets (`wrangler secret put <NAME>`):
 - `SENTRY_CLIENT_SECRET` — from the Sentry Internal Integration.
 - `PROJECT_MAP` — JSON string, Sentry project slug → `{ repo, eventType, minEventCount?, allowWarnings? }`.
 - `GITHUB_PAT` — fine-grained PAT with `contents:write` + `actions:write` on all target repos.
-- `SENTRY_DSN` — DSN for self-reporting exceptions (optional but recommended).
+- `SENTRY_DSN` — **strongly recommended.** Where the Worker reports its own
+  failures (see above). Use the DSN of the Sentry project whose alert rule calls
+  this Worker. A DSN is a public ingest key, not a secret; storing it as a Worker
+  secret just keeps it alongside the rest of the config.
 
 Vars (in `wrangler.toml` under `[vars]`):
 
@@ -79,13 +110,20 @@ must match the `repository_dispatch.types` entry in the target repo's
 cd workers/sentry-triage
 npm install
 npm test            # unit tests, no internal mocks
+npm run deploy:dry-run  # bundle + validate wrangler.toml without publishing
 npm run typecheck
 npm run dev         # wrangler dev
 ```
 
 Tests wire the real modules together and only stub `fetch` (the external
-GitHub boundary) and the KV namespace (`FakeKV` in tests implements the same
+GitHub and Sentry boundaries) and the KV namespace (`FakeKV` in tests implements the same
 contract the real binding exposes).
+
+The worker keeps its own isolated dependency tree. If you vendor it into a
+monorepo, keep it out of the root workspace, and note that `vitest.config.ts`
+pins an inline PostCSS config so Vite does not walk upward and load a parent
+project's `postcss.config.*`. `.github/workflows/sentry-triage-worker-test.yml`
+runs these tests in CI on any change under `workers/sentry-triage/`.
 
 ## Onboarding a new project
 
