@@ -1,0 +1,157 @@
+name: shai-hulud-scan
+
+# Scan the repo for known npm/PyPI supply-chain compromises: the Shai-Hulud
+# self-replicating worm and its follow-on waves, plus related maintainer-account
+# compromises. Runs on every PR, on push to the default branch, and daily, so a
+# newly published compromise is caught even when nobody opens a PR. No Claude,
+# no plan credits.
+#
+# Tool: Cobenian/shai-hulud-detect (MIT). Bash-only, so it adds no npm install
+# of its own (no transitive supply-chain risk). It cross-checks lockfiles and
+# node_modules against its list of compromised package versions, malicious file
+# hashes, postinstall patterns, C2 domains and persistence artifacts.
+# Exit codes: 0 = clean, 1 = high risk, 2 = medium risk.
+#
+# Setup:
+#   - Nothing is required. Useful for any repo with a package.json or Python
+#     lockfile; skip it otherwise.
+#   - DETECTOR_SHA (below): the pinned detector commit. Bump it deliberately,
+#     after reading the detector's diff since the previous pin: a new pin is a
+#     new piece of code running in your CI. The detector's value comes from its
+#     package list, so re-pin regularly (e.g. monthly) to pick up new waves.
+#   - SLACK_WEBHOOK_URL (optional secret): an incoming-webhook URL. When set, a
+#     failure on `main` (including the daily run) posts to Slack. Change `main`
+#     below if your default branch differs.
+#
+# Policy: fail only on HIGH risk. Medium-risk findings (webhook.site mentions,
+# semver ranges, crypto-address-looking strings) are usually false positives
+# from legitimate code; they are annotated and kept in the uploaded report.
+
+'on':
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Daily at 06:15 UTC.
+    - cron: '15 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DETECTOR_REPO: https://github.com/Cobenian/shai-hulud-detect
+  # Pinned commit (2026-10-12). See the header before bumping.
+  DETECTOR_SHA: 5f23f4dda1f3c85db42045023316db988da699f4
+
+jobs:
+  scan:
+    # Room for the fetch retries below on top of checkout and the scan.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest # ships Bash 5.1+, which the detector requires
+    env:
+      # Job-level so the notify step's `if:` can see whether it is set.
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch the pinned detector
+        # github.com occasionally answers a fetch with a transient 503. Retry,
+        # then fall back to the release tarball of the SAME pinned commit: only
+        # the transport varies, the pin never moves. If neither works, fail: a
+        # security gate that silently no-ops is worse than one that is red.
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/shai-hulud-detect"
+          echo "DETECTOR_DIR=${dest}" >> "$GITHUB_ENV"
+
+          rm -rf "$dest"
+          git init --quiet --initial-branch=main "$dest"
+          git -C "$dest" remote add origin "${DETECTOR_REPO}.git"
+
+          # Fetch the pinned commit directly, so the shallow copy is guaranteed
+          # to be that commit rather than whatever HEAD happens to be.
+          fetched=false
+          for attempt in 1 2 3 4; do
+            if git -C "$dest" fetch --quiet --depth 1 origin "$DETECTOR_SHA"; then
+              fetched=true
+              break
+            fi
+            echo "::warning::detector fetch attempt ${attempt}/4 failed"
+            if [ "$attempt" -lt 4 ]; then
+              sleep "$((attempt * 5))"
+            fi
+          done
+
+          if [ "$fetched" = true ]; then
+            git -C "$dest" checkout --quiet FETCH_HEAD
+          else
+            # Weaker than git: git rejects objects that don't hash to the pinned
+            # SHA, while the tarball relies on TLS and a deterministic archive.
+            echo "::warning::git transport exhausted, falling back to the pinned tarball"
+            rm -rf "$dest"
+            mkdir -p "$dest"
+            if ! curl -sSL --fail --retry 3 --retry-delay 5 \
+              "${DETECTOR_REPO}/archive/${DETECTOR_SHA}.tar.gz" \
+              | tar -xz --strip-components=1 -C "$dest"; then
+              echo "::error::Could not obtain the detector at ${DETECTOR_SHA} via git (4 attempts) or tarball. Refusing to report a scan that never ran."
+              exit 1
+            fi
+          fi
+
+          if [ ! -f "$dest/shai-hulud-detector.sh" ]; then
+            echo "::error::shai-hulud-detector.sh missing at pinned commit ${DETECTOR_SHA}."
+            exit 1
+          fi
+          chmod +x "$dest/shai-hulud-detector.sh"
+
+      - name: Scan repository
+        run: |
+          set +e
+          "${DETECTOR_DIR}/shai-hulud-detector.sh" \
+            --save-log shai-hulud-report.log \
+            "$GITHUB_WORKSPACE"
+          status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::error::HIGH RISK supply-chain finding detected. See the uploaded report."
+            exit 1
+          elif [ "$status" -eq 2 ]; then
+            echo "::warning::Medium-risk finding(s): review the uploaded shai-hulud-report.log artifact."
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Check runner host for persistence artifacts
+        # Some waves install a "dead man's switch" (a user service that wipes
+        # the host if its stolen token is revoked). A fresh hosted runner should
+        # be clean; this is informational, so it never fails the job.
+        if: always()
+        run: |
+          if [ -x "${DETECTOR_DIR:-}/shai-hulud-detector.sh" ]; then
+            "${DETECTOR_DIR}/shai-hulud-detector.sh" --check-host /dev/null || true
+          fi
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shai-hulud-report
+          path: shai-hulud-report.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Notify Slack on failure
+        if: failure() && github.ref == 'refs/heads/main' && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v4
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: ":rotating_light: Supply-chain scan failed on main (${{ github.event_name }}): ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
