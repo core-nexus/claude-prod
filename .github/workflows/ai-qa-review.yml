@@ -64,7 +64,6 @@ on:
       - '**/*.md'
       - '**/*.html'
       - '**/*.txt'
-      - 'doc/**'
       - 'docs/**'
       - 'skills/**'
   workflow_dispatch:

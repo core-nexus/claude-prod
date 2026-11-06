@@ -10,11 +10,9 @@ outstanding prepaid liability, and reconciliation against the payment
 processor.
 
 The failure mode this review exists to catch is subtle and expensive: **every
-individual transaction can be correct while the aggregate numbers lie.** A
-classic instance: a dashboard reports a thin margin because its "cost" line
-sums the marked-up credits users _consumed_ (a revenue-side drawdown) instead
-of what the provider actually charged — overstating cost by exactly the markup
-and sending decision-makers chasing a problem that isn't there. Your job is to
+individual transaction can be correct while the aggregate numbers lie.** For
+example, a cost line that sums marked-up usage charges instead of what the
+provider actually charged overstates cost by exactly the markup. Your job is to
 find this class of bug: the money flows correctly but the **meaning** of the
 numbers is wrong.
 
@@ -40,11 +38,11 @@ on the economics.
 Before checking anything, find and state (in your findings) the project's money
 invariants, citing where each is defined in code. Typical ones:
 
-1. **The unit conversion.** E.g. "1 credit = $0.01". Every currency↔unit
+1. **The unit conversion.** E.g. "1 unit = $X". Every currency↔unit
    conversion must use ONE named constant — never a hardcoded literal or a
    drifted rate.
 2. **The markup.** E.g. "users are charged N× provider cost". Derive the implied
-   steady-state gross margin on _paid_ usage (N = 2 → 50%).
+   steady-state gross margin on _paid_ usage (1 − 1/N).
 3. **Where true COGS lives.** The real provider cost must be stored separately
    from the marked-up amount charged to the user. Any "cost", "P&L", or
    "margin" computed from the charged amount is wrong by exactly the markup.
@@ -72,11 +70,10 @@ finding.
 - [ ] Net P&L and margin are computed from (real revenue − real COGS), not from
       (cash in − units consumed), which compares two different things.
 - [ ] Revenue **nets out refunds, chargebacks, and negative adjustments** — and
-      ONLY cash-backed ones. When one transaction type is overloaded (e.g. an
-      `adjustment` used both for refund clawbacks AND for goodwill grants,
-      pipeline-failure refunds, and reconciliation fixes), the revenue
-      classifier must distinguish the cash-backed rows (e.g. by the presence of
-      a processor refund/dispute id), or non-cash grants inflate revenue.
+      ONLY cash-backed ones. When one transaction type is reused for both
+      cash-backed reversals and non-cash grants or corrections, the revenue
+      classifier must tell the cash-backed rows apart (e.g. by the presence of
+      a processor refund/dispute id), or non-cash rows distort revenue.
 - [ ] Gross-vs-net is honest: gross processor volume is not presented as
       take-home without acknowledging processing fees.
 - [ ] Time-window comparisons are cohort-honest: this period's upfront
@@ -103,8 +100,8 @@ finding.
 ### C. Markup Invariant (margin protection)
 
 - [ ] **Every** code path that charges for usage routes the amount through the
-      single markup function. Enumerate them all (chat, voice, image, batch,
-      background/autonomous jobs). A path that charges raw provider cost (1×)
+      single markup function. Enumerate them all — every metered feature,
+      including background and scheduled jobs. A path that charges raw provider cost (1×)
       silently zeroes the margin on that surface.
 - [ ] No path charges a _fixed_ amount decoupled from provider cost in a way that
       can fall below 1× real cost for expensive models/options.
@@ -121,13 +118,14 @@ finding.
 
 ### D. Free-Service Subsidy & Leakage (the real money leaks)
 
-- [ ] The provider cost incurred against **free/bonus credits** (signup bonuses,
-      monthly bonuses, promo grants, free tier) is measurable and bounded. If
+- [ ] The provider cost incurred against **free/bonus credits** (promotional grants,
+      free tier) is measurable and bounded. If
       there is no way to see this number, that is a finding — it is the single
       most likely silent leak.
 - [ ] The balance floor/overdraft limit is enforced on **every** debit path, not
       just the main one. An unbounded-overdraft path is unrecoverable cost.
-- [ ] Rollover caps bound the outstanding unconsumed-balance liability.
+- [ ] Any cap on carried-over balances actually bounds the outstanding
+      unconsumed-balance liability.
 - [ ] Free-tier throttling actually caps the subsidized spend it's meant to cap,
       and any revenue projection uses real revenue-per-unit, not the marked-up
       figure.
@@ -144,13 +142,13 @@ finding.
 
 ### F. Internal / System Usage
 
-- [ ] Usage the platform runs for itself (background agents, content
-      generation, internal tools) is accounted **separately** from customer
+- [ ] Usage the platform runs for itself (background jobs, internal tools) is
+      accounted **separately** from customer
       usage and is not folded into customer-facing cost/P&L — it is pure COGS
       with no matching revenue.
 - [ ] If internal usage is debited through the same markup function, its
       reported "spend" is N× real cost — burn-rate, balance-gating, and any
-      auto-refill thresholds must account for that.
+      automatic top-up thresholds must account for that.
 
 ### G. Processor ↔ Ledger Reconciliation
 

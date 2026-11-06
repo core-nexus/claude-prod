@@ -90,7 +90,7 @@ Eighteen focus areas ship in `.github/review-prompts/`:
 | **documentation** | Stale docs, missing API docs, CLAUDE.md accuracy |
 | **dependency-health** | Vulnerabilities, outdated packages, license compliance, supply chain |
 | **e-commerce** | Payments, subscriptions, webhooks, credits, refunds/disputes/payouts, billing math |
-| **billing-integrity** | Unit economics: do rolled-up revenue/cost/margin numbers tell the truth, markup held on every path, reconciliation with the processor |
+| **billing-integrity** | Unit economics: do rolled-up revenue/cost/margin numbers tell the truth, pricing rules held on every path, reconciliation with the processor |
 | **infrastructure** | CI/CD, pre-commit hooks, linting/formatting, build scripts, env hygiene |
 | **architecture** | Schema/data-model changes, module boundaries, scalability of recent changes |
 | **resilience** | Rate limits, timeouts, retries, idempotency, graceful degradation, blast radius |

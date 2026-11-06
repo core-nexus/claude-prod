@@ -28,8 +28,8 @@ defer to it.
 - [ ] Out-of-order delivery is handled: the event's creation time is threaded
       through so an older event cannot overwrite newer state
 - [ ] **Nothing is acked before it is recoverable.** If the edge returns 200
-      before the durable event-log row exists, any failure in between (a
-      missing secret, a client that throws on construction) loses the event
+      before the durable event-log row exists, any failure in between (e.g. a
+      failure during setup) loses the event
       for good — the provider won't retry and the recovery sweep has no row to
       re-drive. Validate everything needed to persist the row BEFORE acking,
       and fail the delivery (5xx) otherwise so the provider retries.
@@ -93,10 +93,10 @@ credit/feature list on the same plan card is a trust and compliance issue.
       requested amount — otherwise it mints free credit
 - [ ] Usage debits have a **server-derived** deterministic idempotency key when
       the client key or provider request id is optional/absent (hash stable
-      inputs: user, conversation/turn, iteration, model, usage kind). An
+      operation inputs that identify the unit of work). An
       optional client key alone leaves zero dedup on a double-submit.
 - [ ] Every admin/support entry point that mints credits carries a scoped
-      idempotency key and a maximum-amount ceiling, like the hardened paths
+      idempotency key and a maximum-amount ceiling
 
 ### Cost Calculation
 
@@ -120,8 +120,7 @@ credit/feature list on the same plan card is a trust and compliance issue.
 - [ ] **Concurrent checkouts can't double-charge.** A per-(user, item) pending
       purchase slot is reserved BEFORE the checkout session is created, the
       session's idempotency key derives from that slot, and a superseded slot is
-      refused. Cleanup of stale slots for one flow must not expire another
-      flow's in-flight concurrency guard.
+      refused. Cleanup for one flow must not release another flow's guard.
 - [ ] Price/product lookups fail loud when ambiguous (two active prices for one
       product) instead of silently picking the first
 - [ ] Provider-side product/price creation uses deterministic idempotency keys
@@ -135,8 +134,8 @@ credit/feature list on the same plan card is a trust and compliance issue.
       just the latest one
 - [ ] Lost disputes/chargebacks reverse what the original payment granted (and
       what was booked), not only refunds — a lost dispute sends no refund event
-- [ ] A reversal of something already **paid out** (marketplace/creator/referral
-      cash) books a liability instead of clawing back an unrelated ledger
+- [ ] A reversal of something already **paid out** (third-party
+      payouts) books a liability instead of clawing back an unrelated ledger
 - [ ] Payouts to third parties are held long enough to outlast the card-dispute
       window, at least above a value threshold; a late chargeback against money
       already paid out is usually unrecoverable

@@ -171,7 +171,7 @@ jobs:
             - Infrastructure and vendors: environments, which provider does what,
               failover, configuration, moderation or safety-filter mechanics.
             - Admissions: nothing that implies the project did something wrong
-              ("now honest", "no longer hidden", "corrected totals"). An ordinary
+              (wording that says something used to be misleading). An ordinary
               bug fix is fine; a fix whose description reveals one of the
               categories above is not.
 

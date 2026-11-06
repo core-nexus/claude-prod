@@ -83,12 +83,12 @@ Cover these:
 
 #### Field notes
 
-- **Sweep the whole matrix, not the one viewport in the PR body.** Fixes tuned on one viewport routinely fail elsewhere: cover widths from 320px to 1440px including the step just above the PR's breakpoint (a `≤500px` fix can leave the identical bug at 501–670px), every theme, every text-size setting, and production-length strings.
+- **Sweep the whole matrix, not the one viewport in the PR body.** Fixes tuned on one viewport routinely fail elsewhere: cover widths from 320px to 1440px including the step just above the PR's breakpoint (a fix at one breakpoint can leave the same bug just above it), every theme, every text-size setting, and production-length strings.
 - **A fixed px offset beside a rem-sized element holds only at one text size.** Measure the gap at two text sizes and derive a `calc(<px> + <rem>)` offset that tracks it.
 - **A breakpoint that shrinks text must reach as far as the collision does.** Score every width × text-size point against the default branch and reject any variant that is worse anywhere.
 - **Measure contrast fixes in every theme, before and after**, and report the numbers. A token swap that fixes one theme usually lowers contrast in others. To get real rendered contrast over background images, screenshot the element with its text shown, then with its text transparent, and compare the pixels. Prefer a colour pairing the repo already guarantees with a test.
 - **Measure against the clipping container**, not your wrapper — an `overflow-x: auto; max-width: 100%` wrapper can be narrower than the space the content visibly had.
-- **Narrow table columns.** A rem font bump can make a header break mid-word in a `table-layout: fixed` column with `overflow-wrap: break-word`. Count lines with `Range.getClientRects()` to catch it; a px floor such as `max(0.66rem, 12px)` fixes the small case without growing the larger ones.
+- **Narrow table columns.** A rem font bump can make a header break mid-word in a `table-layout: fixed` column with `overflow-wrap: break-word`. Count lines with `Range.getClientRects()` to catch it; a px floor such as `max(<rem>, <px>)` fixes the small case without growing the larger ones.
 - **Glyph-rendering claims** ("a stroke vanishes"): headless Linux Chromium may not match macOS Chromium or WebKit at either pixel ratio. Measure before accepting them.
 - **Injected CSS loses to scoped selectors.** Framework-scoped rules (`.x.<hash>`) beat a plain injected rule, so add `!important` and confirm a computed style changed, or the A/B silently measures the unchanged page. When you inject state into an element, keep its scoping class.
 - **Forcing a 404:** add a glob route interception before the first navigation; an exact-URL route added later can miss the browser's memory cache.

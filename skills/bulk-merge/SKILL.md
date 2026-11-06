@@ -60,7 +60,7 @@ Pipe through `xargs` rather than `triage.sh $PRS`: zsh does not word-split an un
 - **A conflict, or the default branch touched the same file.** The bug may already be fixed or the surface redesigned. These are the likeliest CLOSE candidates.
 - **No checks at all** on the PR. This usually means a bot pushed the head and its `pull_request` runs are stuck at `action_required`. The agent's merge push triggers real runs.
 - **Two PRs touching the same file.** They will conflict after the first one merges.
-- **A guard that leaves its object used unguarded elsewhere.** For example, `if (DEV) initStats()` while the render loop still calls `stats.update()` every frame.
+- **A guard that leaves its object used unguarded elsewhere.** For example, an object initialised only in development but still used unconditionally elsewhere.
 
 #### Collapse duplicates before you fan out
 
@@ -152,9 +152,9 @@ Calls like these mark where MERGE_SAFE ends.
 
 **Flagged by agents, taken through the local pass, then merged** (not handed back):
 
-- A token swap that fixed one theme but lowered contrast in most others. Measured across every theme, the muted token couldn't clear the bar, so the secondary text moved to the primary text token, which cleared everywhere.
-- A catch-all message that briefly lied to entitled users while access loaded. A tri-state access state fixed it, and the same latent flash on two sibling routes.
-- Design choices on shared components (a wrapping pill row at narrow widths, a broken-tile placeholder, a minimum font size for a hairline element), each judged on screenshots across themes, widths and pixel ratios.
+- A colour change that fixed one theme but regressed others, reworked until it held in every theme.
+- A message that briefly showed the wrong state while data loaded, fixed with an explicit loading state.
+- Design choices on shared components, each judged on screenshots across themes, widths and pixel ratios.
 
 **Closed:**
 

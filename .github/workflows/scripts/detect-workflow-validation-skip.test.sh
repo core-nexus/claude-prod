@@ -67,7 +67,7 @@ setup_fixture() {
 
   mkdir -p "${d}/artifacts"
   jq -n '{ repository: { default_branch: "main" },
-           pull_request: { number: 3054, base: { repo: { default_branch: "main" } } } }' \
+           pull_request: { number: 42, base: { repo: { default_branch: "main" } } } }' \
     > "${d}/event.json"
 
   echo "${d}"

@@ -17,7 +17,6 @@ on:
       - '**/*.md'
       - '**/*.html'
       - '**/*.txt'
-      - 'doc/**'
       - 'docs/**'
 ```
 
@@ -98,8 +97,8 @@ without waiting.
 
 ### Required checks fed by a fan-out of jobs
 
-If your required check is an **aggregator** job (one `lint` check that `needs:`
-several `lint-*` tasks), give the aggregator `if: always()` and have it treat a
+If your required check is an **aggregator** job (one `ci` check that `needs:`
+several jobs), give the aggregator `if: always()` and have it treat a
 **skipped** task as success and anything else non-`success` as failure. Then the
 tasks can gate on `detect-changes` as above while the required check still
 reports green on a docs-only PR.
@@ -116,16 +115,16 @@ Everything else forces the full suite. The one exception: `*.html` **under your
 source root** (`src/*.html`) is treated as code, not docs — an app shell or
 framework error page ends in `.html` but is real application code. Adjust the
 `src/` prefix in the script to match your source layout, and add a similar arm
-for any other directory of `.html` files that a build step consumes (generator
-templates, icon sources): if a test guards their output, a PR that edits only
+for any other directory of `.html` files that a build step consumes (templates a
+build step reads): if a test guards their output, a PR that edits only
 those files must not skip that test.
 
 ### Exempting a self-contained subproject
 
-Some repos carry independently-deployed subprojects (a worker, a CLI) with their
-own package manager, lockfile, and CI workflow. Your main suite exercises none of
-their files, so an only-that-subproject PR gains nothing from it, and you can add
-an arm such as `packages/my-worker/*) return 0 ;;` to the classifier.
+If your repo contains a subproject (e.g. a worker or a CLI) that has its own
+lockfile and CI workflow, your main suite exercises none of its files, so a PR
+that touches only that subproject gains nothing from it. You can add an arm such
+as `packages/my-worker/*) return 0 ;;` to the classifier.
 
 The rule for such an exemption is **"the main suite does not test this code, and
 something else does."** Exempt a subproject only if its tests live with it and a

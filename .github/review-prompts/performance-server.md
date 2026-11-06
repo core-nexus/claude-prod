@@ -52,7 +52,7 @@ At 100x scale:
 - [ ] **Silent truncation**: a scan cap (`take(10_000)`) that quietly drops
       older rows is a correctness bug, not a fix — use an index or a junction
       table so the lookup is a point read. Never cap a correctness-critical
-      aggregation (graph edges, ledger sums) without a cursor that drains it.
+      aggregation (relationship edges, ledger sums) without a cursor that drains it.
 - [ ] **Over-fetching**: Queries returning entire records when the client uses
       a few fields — at scale this wastes bandwidth and memory
 - [ ] **Live/reactive query cost**: each real-time subscription is a standing
@@ -65,7 +65,7 @@ At 100x scale:
 
 - [ ] **Write hot spots**: records updated by many concurrent users — global
       counters, aggregate stats, "the one row that tracks X for everyone",
-      a shared credit pool. Fix: shard the counter, derive the number from an
+      a shared balance row. Fix: shard the counter, derive the number from an
       append-only ledger at read time, or accept eventual consistency.
 - [ ] **Transaction size**: mutations that read/write many records stay within
       the backend's per-transaction limits at 10x data size

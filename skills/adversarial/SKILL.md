@@ -58,7 +58,7 @@ Find the PR's preview URL wherever your deploy bot posts it (often a PR comment)
 
 ### First: is the feature reachable at all?
 
-**Check this before you conclude anything works or does not.** A feature behind a feature flag, an access check, or an environment variable can be completely invisible on a preview for reasons that have nothing to do with the code — for example, a flag service whose server-side evaluation key exists in production but was never given to preview deploys, so every flagged read throws and every flagged surface is dark.
+**Check this before you conclude anything works or does not.** A feature behind a feature flag, an access check, or an environment variable can be completely invisible on a preview for reasons that have nothing to do with the code — for example, a secret the flag service needs that exists in production but not in preview, so every flagged surface is dark.
 
 Compare what the preview deployment actually has with what production has (env var names, not values) instead of assuming. If the feature is unreachable on preview, **that is itself a finding** — preview is where QA happens, so a feature that cannot be enabled there cannot be QA'd. Fix the code or the deploy config so it can be, rather than hand-patching one deployment.
 
@@ -72,13 +72,13 @@ The interesting bugs live in the gaps between identities. Use whatever test acco
 - a **returning, fully-set-up user** (already has everything)
 - **logged out** (the deep-link and crawler path)
 
-A real example of why: a returning, fully onboarded user following a shared link was dropped back at onboarding step 1, while a brand-new signup sailed straight past it. Same root cause, opposite symptoms, and neither shows up if you only test as yourself.
+For example, a fix can work for a brand-new signup while sending a returning user back to the start of a flow. Same root cause, opposite symptoms, and neither shows up if you only test as yourself.
 
 ### Try to break it
 
 Aim at the seams, not the happy path:
 
-- **Hand-edit the URL.** Garbage where an id goes. A well-shaped id that is not a real one. Twenty ids where the cap is twelve. Percent-encoded delimiters. An empty value. Someone else's id.
+- **Hand-edit the URL.** Garbage where an id goes. A well-shaped id that is not a real one. More ids than the cap allows. Percent-encoded delimiters. An empty value. Someone else's id.
 - **Do it twice.** Every "fires once" claim — a notification, an attribution, a grant — deserves a second and third arrival. Then check the row count.
 - **Do it as the wrong person.** Open your own share link as yourself. Call a gated action as an ordinary user.
 - **Interrupt it.** Reload mid-flow. Navigate away and come back. Use the back button after a history write-back.
@@ -97,7 +97,7 @@ curl -sA "facebookexternalhit/1.1" "$PREVIEW/<path>" | grep -oE '<meta property=
 curl -s -o card.png -w "%{http_code} %{content_type} %{size_download}\n" "<the og:image URL>"
 ```
 
-Then **open the PNG and look at it.** A route can render perfectly at 1200×630 while the delivered image — produced by a separate screenshot service with its own fixed viewport — is a square with the card jammed in one corner. Looking at the route would never show it.
+Then **open the PNG and look at it.** A route can render perfectly while the delivered image differs from it (wrong size, cropped). Looking at the route would never show it.
 
 **Watch the browser console and the server log.** An error logged once per page view is a finding even when nothing visibly breaks.
 

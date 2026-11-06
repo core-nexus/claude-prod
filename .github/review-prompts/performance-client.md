@@ -42,17 +42,17 @@ drifting back. If no gates exist, recommending one is itself a finding.
 ### Bundle Size & Code-Splitting (HIGHEST PRIORITY)
 
 - [ ] **Heavy deps in the initial chunk**: 3D/graphics, charting, animation,
-      icon sets, ML/vision libraries — any of these landing in the entry/login
+      icon sets, ML/vision libraries — any of these landing in the entry
       chunk is a regression. They must be dynamically imported per route.
 - [ ] **Tree-shaking defeats**: `import * as X from 'big-lib'` or barrel-file
       imports that pull a whole package. Prefer named imports.
 - [ ] **`import type` vs runtime import**: an `import type { … }` is erased at
       build — leave it. A runtime `import { … }` is not. Don't confuse the two
       when chasing bundle weight.
-- [ ] **Route-level lazy loading**: heavy views (3D scenes, maps, globes,
+- [ ] **Route-level lazy loading**: heavy views (3D, maps, charts,
       dashboards) are `await import()`-ed so they never touch the logged-out
       entry bundle. Check the components ALWAYS mounted by the root layout
-      (loading screens, backgrounds) — a single static import there drags a
+      — a single static import there drags a
       heavy library into every route.
 - [ ] **Static side-effect imports** (e.g. a library's CSS) land in every chunk
       that imports the component even when it never renders; move them to the
@@ -98,7 +98,7 @@ drifting back. If no gates exist, recommending one is itself a finding.
       started by a modal or panel that a parent can unmount while they run.
 - [ ] **Store/observable subscriptions** not unsubscribed.
 - [ ] **Graphics/animation resources** (geometries, textures, render loops,
-      tweens registered with a global ticker) not disposed when a view unmounts.
+      animation timers) not disposed when a view unmounts.
 - [ ] **Growing arrays/maps** that are never pruned.
 
 ## Known Hotspot Map (LIVING — keep this current)

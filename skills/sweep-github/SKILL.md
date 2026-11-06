@@ -174,8 +174,8 @@ across groups before you label:**
 3. Nothing gets 10 unless production is broken right now. Usually nothing is.
 
 Write the final list as `$SCRATCH/final.tsv` (`<priority>\t<number>\t<title>`)
-and apply it in the background. At two `gh` calls per PR, about 100 PRs takes
-about 4 minutes:
+and apply it in the background. At two `gh` calls per PR, a large batch takes a
+few minutes:
 
 ```bash
 while IFS=$'\t' read p n _; do skills/sweep-github/scripts/set-priority.sh $n $p; done < $SCRATCH/final.tsv
@@ -212,7 +212,7 @@ with those PR numbers and follow it, with these sweep-specific points:
   detached and push with `git push origin HEAD:<branch>`.
 - **Policy questions go to the human mid-run, then to the agent.** Relay the
   human's answer to the agent with `SendMessage`, and save durable policy to
-  memory (for example, "user erasure keeps audit rows but scrubs PII").
+  memory (for example, "dependency bumps are never merged by the sweep").
 - **"Permission logic" in the merge-safe bar means changes to who can do
   what.** A diff that only _removes_ fields from a public read model, where
   nothing reads them (verify with `git grep` on main), closes a leak and can be
@@ -220,21 +220,18 @@ with those PR numbers and follow it, with these sweep-specific points:
 - **"XLOW, no change" from a review bot can hide a real bug.** Trace any state
   a fix leaves behind into its later readers. A flag a fix leaves set can block
   a later flow (a renewal, a retry) forever.
-- **Registry-style PRs go stale against a moving schema.** For example, a
-  data-erasure cascade that lists every user table. After the main merge, the
-  PR's drift guard is the first thing to check: tables added since it was
-  written are easy to miss.
+- **Registry-style PRs go stale against a moving schema.** Any list that must
+  name every table or module misses the ones added since it was written;
+  re-check it after the main merge.
 - **Production config is the human's to change, never the agent's.** No
   production credential or secret value goes on the agent's machine. The human
   changes production secrets in the hosting dashboard or the CI secrets; the
   agent says which keys need changing and why, then verifies (anonymously, with
   `curl`, against every hostname production answers on).
-- **Example (SvelteKit): a layout guard doesn't protect page data.** Page
-  `load` functions run in parallel with layout loads, so a `+layout.server.ts`
-  that throws 403 still lets a page's own `+page.server.ts` data ship in
-  `__data.json`. Probe the data endpoint, not the page. Other frameworks have
-  their own version of this: check that authorization runs where the data is
-  loaded, not only where the page is rendered.
+- **A guard on the page is not a guard on its data.** In many frameworks a
+  parent layout's or route's access check runs alongside, not before, the data
+  loader, so the data endpoint can still answer. Check that authorization runs
+  where the data is loaded, and probe the data endpoint, not the rendered page.
 
 ## Issues: the same three rounds
 
@@ -329,11 +326,9 @@ file, `assess-brief.md` or the scripts, and open a PR from a worktree.
   without the label never gets closed, and the reviewer re-files the same
   finding. Look for these pairs.
 - **Probe every hostname production answers on.** A platform-default hostname
-  (`*.workers.dev`, `*.vercel.app`, `*.herokuapp.com`, …) can bypass an access
+  (`*.vercel.app`, `*.herokuapp.com`, `*.netlify.app`, …) can bypass an access
   proxy that only fronts the custom domain. A read-only `curl` settles exposure
   faster than reading code.
-- **PRs that predate a package-manager switch** (lockfile changes from the old
-  tool) all need redoing.
 - **Many issues are already fixed or are superseded digests.** Scheduled review
   digests in the same area supersede each other; older ones without the
   bot's label are never auto-closed.
@@ -357,8 +352,8 @@ file, `assess-brief.md` or the scripts, and open a PR from a worktree.
   Delete the `refs/sweep/*` refs afterwards.
 - **"Mentions" is not "fixes".** Count only "Closes/Fixes #N"; a PR listing the
   issue under "known gaps" doesn't fix it.
-- **Issues filed from a session ledger:** read the ledger's PR lines first.
-  Many say "build after #X merges", which is a blocker or `depends_on`.
+- **Issues that name a dependency on another PR** ("build after #X merges")
+  are blocked or `depends_on`, not buildable yet.
 - **Check new issues against older open ones.** Keep the older one canonical,
   carry the details over in a comment, then close the newer.
 - **Issues that need a production check sit open by default.** Give the

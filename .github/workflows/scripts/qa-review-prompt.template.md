@@ -297,7 +297,7 @@ For each scenario, execute real interactions:
 - Watch for toast errors, 404s, blank pages, layout overflows,
   and console errors.
 - **A preview backend often persists across QA runs.** A
-  one-shot or mutating action (redeem a code, delete a row,
+  one-shot or mutating action (submit a form, delete a row,
   complete onboarding) may already have been consumed by an
   earlier run for this PR — the button is gone or the state is
   already advanced. Don't drop that area to a single reused

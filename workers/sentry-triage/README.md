@@ -27,7 +27,7 @@ The Worker is a thin bridge. It does not run Claude itself.
 ## Reporting its own failures
 
 A 502 back to Sentry is not an error to Cloudflare, so a broken dispatch is
-otherwise silent: an expired `GITHUB_PAT` can make every dispatch fail for weeks
+otherwise silent: an expired `GITHUB_PAT` makes every dispatch fail
 without anyone noticing. The Worker therefore posts an error event to
 `SENTRY_DSN` (via `ctx.waitUntil`, so the response is not delayed) when:
 
@@ -119,8 +119,7 @@ Tests wire the real modules together and only stub `fetch` (the external
 GitHub and Sentry boundaries) and the KV namespace (`FakeKV` in tests implements the same
 contract the real binding exposes).
 
-The worker keeps its own isolated dependency tree. If you vendor it into a
-monorepo, keep it out of the root workspace, and note that `vitest.config.ts`
+The worker keeps its own isolated dependency tree. `vitest.config.ts`
 pins an inline PostCSS config so Vite does not walk upward and load a parent
 project's `postcss.config.*`. `.github/workflows/sentry-triage-worker-test.yml`
 runs these tests in CI on any change under `workers/sentry-triage/`.

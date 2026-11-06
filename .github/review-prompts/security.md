@@ -57,15 +57,15 @@ on an untouched handler tells you how long it has gone unexamined.
         draft/unpublished state, which a visibility-only check can miss
 - [ ] Sibling functions enforce the SAME rules: a `list` that skips the
       visibility filter its `get` sibling applies, or a mutation that checks
-      permission on one record but writes to another (e.g. re-parenting a child
-      after checking only the parent), is a cross-user hole
+      permission on one record but writes to another (e.g. writing to a related
+      record after checking only another), is a cross-user hole
 - [ ] Queries that return user records project only public-safe fields; never
       spread a whole user row (tokens, payment-provider ids, contact details)
       into a response for another user
 - [ ] Internal/server-only functions are never exposed as public endpoints
 - [ ] Rate limiting exists and cannot be bypassed
 - [ ] Role-based or permission-based access is consistently enforced, including
-      membership status (a banned/left member must not be grantable a role)
+      membership status (a removed member must not be grantable a role)
 
 ### Input Validation & Injection
 
@@ -168,7 +168,7 @@ only in terms of the primary backend miss the others entirely.
 - [ ] File storage URLs are scoped appropriately
 - [ ] Webhook handlers verify signatures (with a timestamp tolerance) before
       doing any work
-- [ ] Endpoints that call metered third-party APIs (geocoding, LLMs, search)
+- [ ] Endpoints that call metered third-party APIs (LLMs, search, maps)
       have a per-user rate limit, so input jitter can't defeat a cache and burn
       the shared quota
 - [ ] GraphQL/REST endpoints enforce query depth and complexity limits

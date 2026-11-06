@@ -39,7 +39,7 @@ assert_eq() {
 }
 
 # ─── Fixed clock + helpers ───────────────────────────────────────────────
-NOW=$(jq -rn '"2026-06-04T12:00:00Z" | fromdateiso8601')
+NOW=$(jq -rn '"2030-01-01T12:00:00Z" | fromdateiso8601')
 NOW_ISO=$(jq -rn --argjson s "${NOW}" '$s | todateiso8601')
 
 # Epoch seconds for "N days ago".

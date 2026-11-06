@@ -72,9 +72,9 @@ so only the user-visible change remains) when it touches any of:
 - **Infrastructure and vendors.** Environments (production, previews), which
   provider does what, failover behavior, configuration, and moderation or
   safety-filter mechanics.
-- **Admissions.** Nothing that implies the project did something wrong: "now
-  honest", "as advertised", "no longer hidden", "corrected historical totals".
-  An ordinary bug fix ("Fixed the grid going blank on phones") is fine; a fix
+- **Admissions.** Nothing that implies the project did something wrong, such as
+  wording that says a number, a promise, or a limit used to be misleading. An
+  ordinary bug fix ("Fixed a page not loading on some phones") is fine; a fix
   whose description reveals one of the categories above is not.
 
 When in doubt, leave it out. A missing changelog line costs nothing.

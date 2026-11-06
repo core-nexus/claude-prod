@@ -4,9 +4,8 @@ compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
-# Recommended: pin the deploy to the Cloudflare account that owns the live Worker
-# and its SENTRY_SEEN KV namespace, so a mis-set CLOUDFLARE_ACCOUNT_ID fails the
-# deploy instead of publishing a second copy to another account.
+# Recommended: pin account_id so a deploy can only target the account that owns
+# the Worker and its SENTRY_SEEN KV namespace.
 # account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 
 # KV namespace used for 24h dedup of seen Sentry shortIds.

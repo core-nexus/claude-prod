@@ -65,8 +65,8 @@ number in `open_pr`. Merging the PR will close it.
 - **Duplicates of older issues:** check a new issue against older open issues,
   especially skipped authors'. The older one is canonical; say in `notes` which
   details to carry over in a comment before closing the newer one.
-- **Issues filed from a session ledger:** read the ledger's PR lines first.
-  Many say "build after #X merges"; put that in `blocker`.
+- **Issues that name a dependency on another PR** ("build after #X merges"):
+  put that in `blocker`.
 - **Needs a production check you can't run?** Verdict KEEP and start `notes`
   with `needs-prod-check:` and the exact query, rather than leaving it open
   silently.

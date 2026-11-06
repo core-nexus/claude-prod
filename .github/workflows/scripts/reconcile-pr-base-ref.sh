@@ -23,10 +23,9 @@
 #   Restoring … from origin/feat/parent-branch (PR head is untrusted)
 #   fatal: couldn't find remote ref feat/parent-branch
 #
-# …and the whole job fails before the browser ever opens. In the incident
-# that motivated this script the parent merged, GitHub retargeted the PR to
-# `main` two seconds later, and the restore ran ~7 minutes after that, still
-# asking for the dead ref.
+# …and the whole job fails before the browser ever opens. For example, the
+# parent can merge and GitHub can retarget the PR to `main` within seconds,
+# while the restore runs minutes later, still asking for the dead ref.
 # (`--depth=1` is a red herring — `git fetch origin <name>` resolves the
 # name on the server, so clone depth is irrelevant; `couldn't find remote
 # ref` means the branch is simply not there.)

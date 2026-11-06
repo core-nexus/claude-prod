@@ -69,7 +69,7 @@ How to find the evidence fast:
   payload landed** before closing it.
 - **External tracker ids rarely appear in merged PRs.** Search by the
   symptom's keywords instead. If the PR links a tracker card, check the card's
-  status (icebox, blocked, "discuss as team") if you have access.
+  status (e.g. backlog, blocked) if you have access.
 - **A `duplicate` label rarely names its target.** List PRs created in the same
   window (`--search 'created:A..B'`).
 - **Scheduled bot series** (changelog, `review(<area>)`): read the generating
@@ -104,7 +104,7 @@ important.** These are buckets: use the whole range.
 | Score | Meaning                                                                                                                                                                                    |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 10    | Production is broken or bleeding now: an active security hole, data loss, users charged or credited wrongly at scale, site down.                                                           |
-| 9     | A security, auth, money-correctness or legal-compliance gap with real current exposure: internal docs publicly readable, a double-charging path, a missing legally required disclosure.    |
+| 9     | A security, auth, money-correctness or legal-compliance gap with real current exposure: a sensitive page publicly readable, a double-charging path, a missing legally required disclosure.    |
 | 8     | A significant bug on a core flow (sign-in, billing, the product's main actions), PII reaching places it shouldn't, a compliance item with a concrete obligation, or a hard deadline within a month. |
 | 7     | A clear bug fix with moderate reach, or a money edge case.                                                                                                                                 |
 | 6     | A solid improvement with limited impact, a minor bug on a secondary surface, or a typical requested UI change.                                                                             |
@@ -118,7 +118,7 @@ Calibration:
 
 - **Money and security beat UI.** A live billing bug outranks any UI change.
 - **Requested UI changes are human requests, usually 6–7.** Score 7 only for a
-  core flow or a request marked high priority. An iceboxed or blocked request
+  core flow or a request marked high priority. A backlogged or blocked request
   goes lower.
 - Urgency (is something hurting now, is there a deadline?) and importance
   (reach × severity) both count.
