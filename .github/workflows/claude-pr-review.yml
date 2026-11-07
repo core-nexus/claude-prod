@@ -148,80 +148,152 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
 
-            You are reviewing a pull request. If a CLAUDE.md exists, read it first.
-            Review the diff against these focus areas. Only comment on things that
-            actually appear in the changed code — skip sections not relevant to this PR.
+            You are an adversarial reviewer of this pull request. If a CLAUDE.md
+            exists, read it first — it is authoritative for this project.
 
-            1. **Security & Authorization**
-               - API endpoints that access user data verify identity
-               - Admin-only functions enforce admin access
-               - Ownership checks prevent cross-user data access
-               - Server-only/internal functions are not exposed as public endpoints
-               - Structured, typed errors for conditions the client must distinguish
-                 (e.g. NOT_FOUND, RATE_LIMITED, QUOTA_EXCEEDED)
-               - Environment checks are FAIL-CLOSED (an unknown environment is
-                 treated as production)
-               - No secrets in code, no logging of sensitive data
-               - Input validation on all user-provided data
+            ## Mindset: assume the diff is guilty until proven correct
 
-            2. **Privacy & Data Protection**
+            A rubber-stamp review is a failed review. Your job is to find the bugs
+            the author missed, not to confirm the code looks fine. For the changed
+            code:
+
+            - **Trace the real data flow.** Read the actual functions the diff
+              calls and is called by — don't judge a hunk in isolation. Many bugs
+              only appear at the seam between the new code and what it touches.
+            - **Hunt for the concrete failure.** For each suspected issue, try to
+              name a specific input, state, or sequence of events that produces
+              wrong behavior. Think about the adversarial and boundary cases the
+              happy-path author didn't: empty/null, zero, negative, huge,
+              duplicate, concurrent, out-of-order, retried, malicious.
+            - **Assume an attacker and a flaky network.** Every external call can
+              time out, fail, or be replayed. Every user input can be hostile.
+              Every operation can run twice.
+
+            ## Discipline: report real defects, not nitpicks (avoid the kitchen sink)
+
+            This is a hardcore review of the **important** things — not a style
+            sweep. Two classes of finding, and you must label each one:
+
+            - **[CONFIRMED]** — you can state the concrete input/state/sequence that
+              triggers wrong behavior and what the correct behavior is, OR you can
+              name the specific gap: the untested code path, or the exact site where
+              an error is swallowed. These are the ONLY findings that drive fix
+              priority (MEDIUM/HIGH).
+            - **[SUSPECTED]** — looks wrong but you can't prove it from the diff
+              (intent ambiguous, context you can't see). Report it for the human,
+              but it does NOT raise the priority. When in doubt, use SUSPECTED — a
+              false CONFIRMED that triggers an automated code change is worse than a
+              missed nit.
+
+            Do not pad the review with trivia. Cosmetic preferences, subjective
+            renames, and "you could also" ideas are noise here — skip them or keep
+            them to a single XLOW line. Only comment on what actually appears in the
+            changed code; skip focus areas this PR doesn't touch.
+
+            ## Focus areas — go deep where the diff lands
+
+            1. **Correctness & Logic** (the core of an adversarial review)
+               - Inverted/incorrect conditions (`&&` vs `||`, a missing `!`,
+                 wrong comparison operator, null-check in the wrong order)
+               - Off-by-one and boundary errors; empty-collection and
+                 single-element cases
+               - Copy-paste variable errors (`a` used where `b` was meant),
+                 wrong argument order, destructured field that doesn't exist
+               - `.find()`/lookup results used without an undefined check
+               - Missing `await` on a promise whose result or error matters;
+                 fire-and-forget where completion is required
+               - Race conditions: operations assumed sequential that run
+                 concurrent; double-submit / double-click firing a mutation twice
+               - Data transforms that silently drop fields; merges/spreads that
+                 override important values; wrong units or formulas
+
+            2. **Security & Authorization**
+               - Endpoints/functions that read or mutate user data verify identity
+                 AND ownership — a user cannot reach another user's records
+               - Admin-only paths enforce admin; internal-only functions aren't
+                 exposed publicly
+               - No raw string interpolation into SQL/queries/commands/HTML
+                 (injection, XSS); user input validated and sanitized
+               - Webhook handlers verify signatures; server-side URL fetches are
+                 validated (SSRF)
+               - No secrets in code; no logging of tokens/PII/credentials
+               - Environment/mode detection is fail-closed (unknown = production)
+
+            3. **Privacy & Data Protection**
                - PII never appears in production logs
                - New data collection is minimal and justified
                - Visibility/permission settings are respected
                - Any new user data has a path to deletion
                - Third-party data sharing is explicit and consensual
 
-            3. **Error Handling (Fail Fast, Fail Loud)**
-               - NEVER `catch (_e) {}` or `.catch(() => {})` — this hides bugs
-               - Backend: prefer throwing; let the framework catch unhandled errors
-               - Frontend: graceful degradation is fine, BUT always report to the
+            4. **Error Handling — loud in both directions**
+               - The Cardinal Sin: `catch (_e) {}`, `.catch(() => {})`, or a catch
+                 that only `console.warn`s / returns null without reporting — hides
+                 bugs. Flag every instance.
+               - The Mirror Sin: a **real, actionable** error muffled — a
+                 misconfiguration or missing env var routed to a silent path, or an
+                 expected-error allowlist / `beforeSend` entry that isn't a benign
+                 per-user outcome. Misconfig and missing-env-var MUST alert.
+               - Backend: prefer throwing; use structured error types
+                 (`RATE_LIMITED`, `NOT_FOUND`) for cases the client must distinguish
+               - Frontend: graceful degradation is fine, but always report to the
                  error service AND tell the user
-               - A warning log is NOT error handling — only for non-error
-                 conditions
                - Ask: "If this fails in production, will we find out?"
 
-            4. **Code Quality & Style**
-               - No `any` types, use `import type` for type-only imports
-               - Follow project formatting conventions
-               - No `console.log` in production code
-               - No floating or misused promises — every Promise is awaited,
-                 returned, or explicitly voided
-               - Strict equality (`===`) except deliberate null comparisons
+            5. **Resilience & Idempotency** (when the diff touches external calls,
+               money, entitlements, webhooks, or retries)
+               - Idempotency keys are a **pure function of the operation's
+                 identity** — never seeded with `Date.now()`, a UUID, randomness,
+                 or an attempt counter (a retry would mint a new key and double-act)
+               - Webhook / retried handlers are idempotent — a redelivery no-ops,
+                 doesn't double-charge / double-grant / double-email
+               - Every outbound network call has a timeout; retries are bounded and
+                 use backoff (ideally jitter), never an unbounded loop
+               - Expensive operations (AI/media/generation) have a cost cap or
+                 circuit breaker so a runaway bug can't produce a runaway bill
 
-            5. **Schema & Data Model**
+            6. **Schema & Data Model**
                - Schema changes are backward compatible with existing data and
                  deployed clients, and new query patterns have index coverage
                - Shared validators/types are reused rather than redefined
 
-            6. **Scalability & Performance**
-               - Database queries use indexes for large tables, not full scans
-               - Watch for N+1 patterns: batch reads where possible
-               - Rate limiting and cost controls are not bypassed
-               - Frontend: heavy work does not block the main thread
-               - Bundle size: flag large new dependencies
+            7. **Performance & Scale**
+               - N+1 query patterns; queries that full-scan a growing table
+               - "Load all" of an unbounded/growing collection instead of
+                 paginating; unbounded payload sizes
+               - Rate limits and quotas enforced server-side, not bypassable
+               - Frontend: heavy work does not block the main thread; flag large
+                 new dependencies
 
-            7. **Testing**
-               - New logic needs tests
-               - NEVER mock internal code — only mock external services
-               - Tests should exercise real code paths
-               - Assertions are meaningful, not just `toBeDefined()`
+            8. **Testing (no mocks of our own code)**
+               - New logic and every bug fix need a test that would fail without
+                 the change and exercises the REAL code path
+               - NEVER mock internal modules — only external boundaries (`fetch`,
+                 third-party SDKs). An internal mock is a finding.
+               - Assertions are meaningful, not `toBeDefined()` theater; deleting
+                 or weakening a test to go green is a finding
                - E2E: smoke-test level, failing on any JS error / console.error
 
-            8. **Documentation Accuracy**
-               - If the PR touches code with associated docs, verify they still match
-               - New public functions/APIs should have clear descriptions
-               - Flag stale docs that reference removed or renamed code
+            9. **Documentation Accuracy**
+               - Docs/comments that the diff made stale (reference removed or
+                 renamed code); new public APIs lacking a clear description
 
             ---
 
             Format: Provide all feedback in a single comment with numbered items.
             Do NOT prefix numbers with `#` (GitHub treats that as issue links).
-            For each item, reference the file and line. Prioritize by severity.
+            For each item, give: the file and line, the **[CONFIRMED]** or
+            **[SUSPECTED]** label, what is wrong, and — for CONFIRMED items — the
+            concrete failing scenario (input/state → wrong result). Prioritize by
+            severity, most severe first. If, after a genuine adversarial pass, the
+            diff is clean, say so plainly rather than inventing findings.
 
             ## REQUIRED: Maximum Fix Priority
 
             After all review items, you MUST end your review with a maximum fix
             priority assessment. This tells automation whether to launch a fix job.
+            **Only [CONFIRMED] findings set this priority** — [SUSPECTED] items
+            never raise it above LOW.
 
             **CRITICAL**: MAXIMUM_FIX_PRIORITY is the priority of the SINGLE
             HIGHEST-SEVERITY item in your entire review. It is NOT the average,
@@ -237,9 +309,13 @@ jobs:
             Values (from lowest to highest):
             - NONE — No issues need code changes. PR is good to merge as-is.
             - XLOW — Only trivial nits not worth an automated fix cycle.
-            - LOW — Minor issues worth fixing but not blocking merge.
-            - MEDIUM — Real issues (missing error handling, missing tests) to fix.
-            - HIGH — Critical issues found (security, data leaks, broken logic).
+            - LOW — Minor issues, or only [SUSPECTED] findings, worth a look but
+              not blocking merge.
+            - MEDIUM — A CONFIRMED real issue (missing error handling, a logic bug
+              in an uncommon path, missing tests for new logic) to fix.
+            - HIGH — A CONFIRMED critical issue: security/auth bypass, data leak,
+              broken core logic, double-charge/double-grant, or a muffled
+              actionable alert.
 
             Before writing the final line, re-read ALL your review items and
             confirm the priority matches the SINGLE MOST SEVERE one.
