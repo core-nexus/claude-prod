@@ -1,0 +1,41 @@
+name: Codebase Review scripts tests
+
+# Runs the bash unit tests for the codebase review's area scheduler,
+# `scripts/resolve-review-area.sh` — the adaptive per-area resolver that decides
+# which review area(s) are due on each run. The suite stubs `gh` on PATH (the
+# GitHub API is the only external boundary), so it needs no secrets.
+#
+# It also guards the area registry: it fails if the resolver's area lists, the
+# `.github/review-prompts/*.md` files, and the `workflow_dispatch` options in
+# `codebase-review.yml` drift apart.
+#
+# Setup: none — no secrets or variables. Copy it alongside codebase-review.yml
+# and its scripts. Scoped tight via `paths:` so it only runs when the
+# scheduler, its test, the prompts, or the workflow change.
+#
+# PR-only (plus manual dispatch): the check is visible in the PR UI, so no
+# failure notification is needed.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/scripts/resolve-review-area*.sh'
+      - '.github/review-prompts/**'
+      - '.github/workflows/codebase-review.yml'
+      - '.github/workflows/codebase-review-scripts-test.yml'
+  workflow_dispatch:
+
+# Default to least-privilege.
+permissions:
+  contents: read
+
+jobs:
+  scripts-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run resolve-review-area.sh tests
+        run: bash .github/workflows/scripts/resolve-review-area.test.sh

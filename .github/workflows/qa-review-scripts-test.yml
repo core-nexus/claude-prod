@@ -1,0 +1,62 @@
+name: QA & PR review scripts tests
+
+# Runs the bash unit/integration tests for the helper scripts behind
+# `ai-qa-review.yml` and `claude-pr-review.yml` on every PR that touches
+# them, plus on push to main as a backstop. No secrets, no Claude run.
+#
+# Scoped via `paths:` so it only triggers when those scripts or their tests
+# change, keeping it off the critical path of unrelated PRs.
+#
+# Setup: copy this file alongside the scripts it lists. Nothing to configure.
+# The tests need only bash, git, jq, and perl (all on ubuntu-latest).
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/scripts/post-qa-comment*.sh'
+      - '.github/workflows/scripts/extract-qa-custom-instructions*.sh'
+      - '.github/workflows/scripts/reconcile-pr-base-ref*.sh'
+      - '.github/workflows/scripts/detect-workflow-validation-skip*.sh'
+      - '.github/workflows/scripts/detect-docs-only*.sh'
+      - '.github/workflows/qa-review-scripts-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/scripts/post-qa-comment*.sh'
+      - '.github/workflows/scripts/extract-qa-custom-instructions*.sh'
+      - '.github/workflows/scripts/reconcile-pr-base-ref*.sh'
+      - '.github/workflows/scripts/detect-workflow-validation-skip*.sh'
+      - '.github/workflows/scripts/detect-docs-only*.sh'
+      - '.github/workflows/qa-review-scripts-test.yml'
+  workflow_dispatch:
+
+# Default to least-privilege.
+permissions:
+  contents: read
+
+jobs:
+  scripts-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure git identity for integration tests
+        # The *.git.test.sh suites and detect-workflow-validation-skip.test.sh
+        # run real git commits against local throwaway repos.
+        run: |
+          git config --global user.name 'qa-review-tests'
+          git config --global user.email 'qa-review-tests@example.com'
+      - name: Run post-qa-comment.sh tests
+        run: bash .github/workflows/scripts/post-qa-comment.test.sh
+      - name: Run extract-qa-custom-instructions.sh tests
+        run: bash .github/workflows/scripts/extract-qa-custom-instructions.test.sh
+      - name: Run reconcile-pr-base-ref.sh tests
+        run: bash .github/workflows/scripts/reconcile-pr-base-ref.test.sh
+      - name: Run reconcile-pr-base-ref.sh git integration tests
+        run: bash .github/workflows/scripts/reconcile-pr-base-ref.git.test.sh
+      - name: Run detect-workflow-validation-skip.sh tests
+        run: bash .github/workflows/scripts/detect-workflow-validation-skip.test.sh
+      - name: Run detect-docs-only.sh tests
+        run: bash .github/workflows/scripts/detect-docs-only.test.sh

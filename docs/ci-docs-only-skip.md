@@ -15,13 +15,23 @@ on:
   pull_request:
     paths-ignore:
       - '**/*.md'
+      - '**/*.html'
       - '**/*.txt'
       - 'docs/**'
 ```
 
 This repo's `claude-pr-review.yml` and `ai-qa-review.yml` already do this — a
 docs-only PR gets no AI code review and no visual QA, because there's nothing
-code-shaped to review.
+code-shaped to review. (`ai-qa-review.yml` also ignores `skills/**`: an agent
+skill changes nothing a browser can observe.) Manual `/claude-review` and
+`/qa-review` comments, and `workflow_dispatch`, bypass `paths-ignore`, so you can
+always force a run.
+
+`paths-ignore` cannot express exceptions, so it cannot say "`*.html` is docs
+except under `src/`". An app-shell-only PR (e.g. `src/index.html`) therefore skips these
+two **advisory** AI workflows. That is safe as long as your deterministic suite
+gates on the classifier below (which does treat `src/*.html` as code); if you'd
+rather the AI passes fire too, drop `'**/*.html'` from their `paths-ignore`.
 
 **The catch:** if the workflow is a **required** status check, `paths-ignore`
 makes it never run, so its status never reports, and the PR sits forever waiting
@@ -52,10 +62,16 @@ jobs:
         id: detect
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.number }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            FILES=$(gh pr view "${{ github.event.number }}" \
-              --json files --jq '.files[].path')
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            # The REST files endpoint paginates (up to 3,000 files);
+            # `gh pr view --json files` stops at 100, which would let a large
+            # PR's 101st file — the code one — go unseen.
+            FILES=$(gh api --paginate \
+              "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" \
+              --jq '.[].filename')
           else
             FILES=$(git diff --name-only HEAD~1 HEAD)
           fi
@@ -64,7 +80,11 @@ jobs:
 
   test:
     needs: detect-changes
-    if: needs.detect-changes.outputs.run_suite == 'true'
+    # Fail-safe gate: skip ONLY when detection succeeded AND said docs-only.
+    # If the detect job errored (API hiccup), run_suite is empty, not 'false',
+    # so the full suite runs. A naive `run_suite == 'true'` gate would do the
+    # opposite and silently skip the suite whenever detection broke.
+    if: ${{ !cancelled() && (needs.detect-changes.result != 'success' || needs.detect-changes.outputs.run_suite != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +94,14 @@ jobs:
 When `run_suite == 'false'`, the `test` job is skipped. If `test` is a required
 check, a skipped required job is treated as passing, so the docs-only PR merges
 without waiting.
+
+### Required checks fed by a fan-out of jobs
+
+If your required check is an **aggregator** job (one `ci` check that `needs:`
+several jobs), give the aggregator `if: always()` and have it treat a
+**skipped** task as success and anything else non-`success` as failure. Then the
+tasks can gate on `detect-changes` as above while the required check still
+reports green on a docs-only PR.
 
 ### What counts as "docs"
 
@@ -86,7 +114,24 @@ without waiting.
 Everything else forces the full suite. The one exception: `*.html` **under your
 source root** (`src/*.html`) is treated as code, not docs — an app shell or
 framework error page ends in `.html` but is real application code. Adjust the
-`src/` prefix in the script to match your source layout.
+`src/` prefix in the script to match your source layout, and add a similar arm
+for any other directory of `.html` files that a build step consumes (templates a
+build step reads): if a test guards their output, a PR that edits only
+those files must not skip that test.
+
+### Exempting a self-contained subproject
+
+If your repo contains a subproject (e.g. a worker or a CLI) that has its own
+lockfile and CI workflow, your main suite exercises none of its files, so a PR
+that touches only that subproject gains nothing from it. You can add an arm such
+as `packages/my-worker/*) return 0 ;;` to the classifier.
+
+The rule for such an exemption is **"the main suite does not test this code, and
+something else does."** Exempt a subproject only if its tests live with it and a
+workflow of its own runs them. If any of its tests run in the main suite, it
+belongs in the suite, or a PR that touches only that logic merges with its tests
+never having run. Put any carve-out arm *above* the broader one, since `case`
+takes the first match, and add a test for it.
 
 ### Tests
 

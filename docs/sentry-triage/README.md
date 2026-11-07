@@ -46,6 +46,20 @@ Four dedup layers stacked so a firehose issue never re-triggers:
 Regressions bypass layer 2 (a previously-fixed issue firing again is
 exactly the signal we want to re-run on).
 
+### Failures stay loud
+
+Each half of the pipeline reports its own silent failure modes:
+
+- **Worker** — a non-2xx from GitHub, a missing `GITHUB_PAT`, an unparseable
+  `PROJECT_MAP`, or an unhandled exception is posted to `SENTRY_DSN` as a
+  `[sentry-triage] <reason>` event. Those self-reports are tagged and filtered
+  on the way back in, so an echo is never dispatched and cannot loop.
+- **Workflow** — if the Sentry MCP never connected (wrong token or auth
+  scheme), Claude cannot read the issue and the action would still report
+  success; a `Verify Sentry MCP connected` step fails the job instead. Hitting
+  the job timeout counts as a failure for the Slack alert, and Claude's
+  transcript is uploaded as a 7-day artifact for debugging.
+
 ### Blast-radius numbers travel in the dispatch
 
 The dispatched payload carries the issue's blast-radius fields — `count` (total
@@ -53,7 +67,17 @@ event frequency), `userCount` (affected users), `firstSeen`, and `lastSeen` — 
 the triage agent has them even when the Sentry MCP is unavailable. The payload is
 the **authoritative** source for these numbers; the MCP is used only to enrich
 (full stacktrace, per-day/per-release breakdowns), with graceful fallback to the
-payload values.
+payload values. `event_alert` webhooks usually omit the aggregate counts, so the
+payload also carries `sentryApiIssueUrl` for the agent to fetch them.
+
+Beyond that, the Worker forwards as much context as fits under GitHub's ~10 KB
+`client_payload` cap: all non-secret tags, the request (query string only when
+PII redaction is off), user id / username / geo, a whitelisted set of contexts
+(trace, runtime, os, browser, device, ...), SDK, fingerprint, and `extra`. Keys
+that look like secrets (`token`, `password`, `api_key`, `cookie`, ...) are always
+dropped. When the payload is too big it sheds the least decision-relevant data
+first (`extra`, then breadcrumbs, contexts, frames, tags) and never drops the
+aggregate counts, the exception, IDs or URLs.
 
 ## Files in this folder
 
@@ -68,6 +92,9 @@ payload values.
 
 - **[`workers/sentry-triage/`](../../workers/sentry-triage/)** — the
   Cloudflare Worker implementation.
+- **[`.github/workflows/sentry-triage-worker-test.yml`](../../.github/workflows/sentry-triage-worker-test.yml)** —
+  CI for the Worker: typecheck, unit tests, a `wrangler deploy --dry-run`, and
+  the workflow's shell-script tests. It never deploys.
 - **[`.github/workflows/sentry-triage.yml`](../../.github/workflows/sentry-triage.yml)** —
   the receiving workflow. Triggered via `repository_dispatch` from the
   Worker. Runs `anthropics/claude-code-action@v1` with a triage prompt.

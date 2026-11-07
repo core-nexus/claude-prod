@@ -21,8 +21,8 @@ itself. It does do:
   (10 KB limit).
 - Multi-project routing via config (one Sentry project → one GitHub repo).
 - Short-term dedup so a flapping rule can't double-dispatch.
-- Observability: structured logs + (optional) self-reporting errors to
-  Sentry.
+- Observability: structured logs + self-reporting its own failures to
+  Sentry (strongly recommended; see "Observability").
 
 ## Non-goals
 
@@ -109,19 +109,24 @@ type Normalized = {
   issueId: string // numeric, stable identifier
   title: string
   culprit: string | null
+  message: string | null // event message / logentry, or issue metadata value
   level: 'fatal' | 'error' | 'warning' | 'info' | 'debug'
   platform: string // "javascript", "node", etc.
   environment: string | null
   release: string | null
+  transaction: string | null
+  serverName: string | null
   firstSeen: string | null // ISO-8601 — blast-radius (see note below)
   lastSeen: string | null // ISO-8601 — blast-radius
   count: number | null // total event frequency — blast-radius
   userCount: number | null // affected users — blast-radius
   issueType: string | null // e.g. "error"
   issueCategory: string | null
+  isUnhandled: boolean | null
   sentryIssueUrl: string // human URL for the issue
   sentryEventUrl: string | null // human URL for the specific event (only for event_alert)
   sentryApiEventUrl: string | null // API URL to fetch full event JSON
+  sentryApiIssueUrl: string | null // API URL to fetch exact issue counts
   latestEventId: string | null
   triggeredRule: string | null
   trigger: 'created' | 'regressed' | 'escalated' | 'event_alert' | 'other'
@@ -142,7 +147,19 @@ type Normalized = {
     message: string | null
     timestamp: string | null
   }>
-  tags: Record<string, string> // browser, os, url, runtime, etc. — flat key→value
+  tags: Record<string, string> // all non-secret tags — flat key→value
+  request: { url: string | null; method: string | null; queryString: string | null } | null
+  user: {
+    id: string | null
+    username: string | null
+    email: string | null // null when REDACT_PII=true
+    ipAddress: string | null // null when REDACT_PII=true
+    geo: Record<string, string> | null
+  } | null
+  contexts: Record<string, Record<string, string>> // whitelisted, flattened
+  sdk: { name: string | null; version: string | null } | null
+  fingerprint: string[]
+  extra: Record<string, string> // stringified, truncated
   dispatchId: string // uuid we generate, for tracing end-to-end
 }
 ```
@@ -162,16 +179,32 @@ Mapping rules:
   200 chars.
 - `breadcrumbs`: last **10** breadcrumbs in chronological order.
   Truncate messages to 200 chars.
-- `tags`: convert the `[[k, v], ...]` array to an object. Whitelist the
-  most useful (browser, browser.name, os, os.name, runtime, url,
-  transaction, environment, release, user.id, user.email, level,
-  handled, mechanism). Drop PII-sounding keys (`user.email`) if the
-  config flag `REDACT_PII=true`.
+- `tags`: convert the `[[k, v], ...]` array (or `{key, value}` objects) to
+  an object. Forward all of them (up to 50, values truncated to 200 chars) —
+  tags carry a lot of triage signal (feature flags, tenant ids, custom
+  dimensions) — except keys that look like secrets (`secret`, `token`,
+  `password`, `api_key`, `auth`, `credential`, `cookie`, `session`,
+  `private_key`), which are always dropped, and PII keys (`user.email`,
+  `user.ip_address`, `ip`, ...) when `REDACT_PII=true`.
+- `request`: url and method; the query string only when `REDACT_PII=false`
+  (it often carries tokens).
+- `contexts`: only `trace`, `runtime`, `os`, `browser`, `device`, `app`,
+  `gpu`, `culture`, `response`, `profile`, `replay`, each flattened to
+  scalar strings. `extra`: up to 20 keys, secret-looking keys dropped,
+  values stringified and truncated to 300 chars.
+- `count` / `userCount` / `firstSeen` / `lastSeen`: taken from wherever the
+  payload carries them (the issue object, a nested `data.issue` on newer
+  `event_alert` payloads, or event metadata). `sentryApiIssueUrl` is always
+  set so downstream can fetch exact numbers when they are absent.
 
 ## Filtering (second gate after Sentry's own filters)
 
 Drop without dispatching (respond 200 with a `filtered` status) if any of:
 
+- The event is the Worker's own self-report (tag
+  `sentry_triage.self_report=true` or a title starting `[sentry-triage]`).
+  This check runs before `PROJECT_MAP` is parsed, so a broken map cannot turn
+  every echo into a fresh report.
 - `trigger === 'other'` (we don't triage on assigned/archived/ignored).
 - `level` not in `{fatal, error}` unless config explicitly allows
   warnings for this project.
@@ -262,10 +295,14 @@ GitHub's `client_payload` has two limits we juggle:
   single `data` string (with `shortId` lifted to top level so the
   workflow can reference it from `github.event.client_payload.shortId`
   expressions).
-- ~10 KB total — the payload module shrinks the Normalized data
-  progressively when it overflows. Order of things to drop: breadcrumbs
-  → topFrames beyond 3 → tags beyond a whitelist → contextLine on
-  frames. URLs and IDs are never dropped.
+- ~10 KB total (GitHub answers 422 "client_payload is too large") — the
+  payload module measures the *actual* serialized `client_payload`
+  (post-escaping, budget 9500 bytes) and shrinks the Normalized data
+  progressively when it overflows. Order of things to drop: `extra` →
+  breadcrumbs → contexts beyond trace/runtime/os/browser → topFrames beyond
+  5 → tags beyond a core whitelist → topFrames beyond 3 → remaining contexts
+  and fingerprint → contextLine on frames → truncate long strings. The
+  aggregate counts, the exception, URLs and IDs are never dropped.
 
 GitHub responds `204 No Content` on success. Any non-2xx → log and return
 `502` to Sentry so it retries (Sentry retries failed webhooks with
@@ -310,10 +347,17 @@ so curl-debug sessions are sane.
   `decision` ∈ `{dispatched, filtered, deduped, rejected}`. Use
   `console.log` with JSON; rely on Workers Logpush to ship to a log
   sink.
-- **Error reporting.** Wrap the handler in `@sentry/cloudflare` (or a
-  similar SDK). Any uncaught throw → report to a Sentry org under a
-  dedicated `sentry-triage` project (don't cross-contaminate with the
-  projects the Worker is triaging, to avoid infinite loops).
+- **Error reporting.** A 502 back to Sentry is not an error to Cloudflare,
+  so the Worker reports its own failures with a dependency-free envelope POST
+  to `SENTRY_DSN` (via `ctx.waitUntil`, so responses are not delayed):
+  `github_dispatch_failed` (GitHub status + first 500 chars of its body, never
+  the token), `no_github_credentials`, `bad_project_map`, and
+  `unhandled_exception`. Each report is a message prefixed `[sentry-triage]`,
+  tagged `sentry_triage.self_report=true`, with a fixed fingerprint
+  (`sentry-triage` + reason [+ GitHub status]) so repeats group into one issue.
+  The filter drops echoes of these, so the DSN may point at the same project
+  the Worker triages without creating a loop. With no DSN set, failures are
+  `level: "error"` log lines plus a `sentry_dsn_unset` line.
 - **Metrics (nice-to-have).** Counter increments via Analytics Engine:
   `dispatched{project}`, `filtered{project, reason}`, `deduped{project}`,
   `rejected{reason}`, `dispatch_latency_ms{project}`.
@@ -327,7 +371,7 @@ so curl-debug sessions are sane.
 | `GITHUB_APP_ID`          | string                        | if using app | Numeric GitHub App ID.                                      |
 | `GITHUB_APP_PRIVATE_KEY` | secret                        | if using app | PEM-encoded private key.                                    |
 | `GITHUB_PAT`             | secret                        | if using PAT | Fine-grained PAT with contents+actions write on targets.    |
-| `SENTRY_DSN`             | string                        | optional     | DSN for self-reporting to Sentry.                           |
+| `SENTRY_DSN`             | string                        | recommended  | Where the Worker reports its own failures (see above).      |
 | `REDACT_PII`             | string `true`/`false`         | no           | Default `true`. Strips user.email etc. from client_payload. |
 | `ALLOW_WARNINGS_GLOBAL`  | string `true`/`false`         | no           | Default `false`.                                            |
 | `LOG_LEVEL`              | `debug`/`info`/`warn`/`error` | no           | Default `info`.                                             |

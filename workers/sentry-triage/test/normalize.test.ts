@@ -96,6 +96,92 @@ describe('normalize event_alert', () => {
     if (result.kind !== 'normalized') throw new Error('expected normalized')
     expect(result.data.tags['user.email']).toBe('alice@example.com')
   })
+
+  it('forwards all non-sensitive tags, not just a whitelist', () => {
+    const result = normalize('event_alert', fx('event_alert.json'), {
+      dispatchId: DISPATCH_ID,
+      redactPii: true,
+    })
+    if (result.kind !== 'normalized') throw new Error('expected normalized')
+    // Previously these non-whitelisted tags were dropped.
+    expect(result.data.tags.os).toBe('Mac OS X 14.2')
+    expect(result.data.tags.url).toBe('https://acme.example/dashboard')
+  })
+
+  it('captures request, user, contexts, sdk, fingerprint and extra', () => {
+    const result = normalize('event_alert', fx('event_alert.json'), {
+      dispatchId: DISPATCH_ID,
+      redactPii: true,
+    })
+    if (result.kind !== 'normalized') throw new Error('expected normalized')
+    const n = result.data
+    expect(n.transaction).toBe('/dashboard')
+    expect(n.serverName).toBe('web-01')
+    expect(n.message).toContain('TypeError')
+    expect(n.request).toEqual({
+      url: 'https://acme.example/dashboard',
+      method: 'GET',
+      queryString: null, // redacted because it can carry tokens/PII
+    })
+    expect(n.user?.id).toBe('u_123')
+    expect(n.user?.username).toBe('alice')
+    expect(n.user?.email).toBeNull()
+    expect(n.user?.ipAddress).toBeNull()
+    expect(n.user?.geo).toEqual({ country_code: 'US', region: 'California', city: 'San Francisco' })
+    expect(n.contexts.runtime).toEqual({ name: 'node', version: '20.11.0' })
+    expect(n.contexts.trace?.trace_id).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    expect(n.sdk).toEqual({ name: 'sentry.javascript.browser', version: '7.99.0' })
+    expect(n.fingerprint).toEqual(['{{ default }}'])
+    expect(n.extra.feature_flag).toBe('new-dashboard')
+    expect(n.extra.retry_count).toBe('3')
+    // Secret-looking extra keys are dropped.
+    expect(n.extra.api_token).toBeUndefined()
+  })
+
+  it('keeps PII (email/ip/query) when redactPii is false', () => {
+    const result = normalize('event_alert', fx('event_alert.json'), {
+      dispatchId: DISPATCH_ID,
+      redactPii: false,
+    })
+    if (result.kind !== 'normalized') throw new Error('expected normalized')
+    const n = result.data
+    expect(n.user?.email).toBe('alice@example.com')
+    expect(n.user?.ipAddress).toBe('203.0.113.7')
+    expect(n.request?.queryString).toBe('tab=overview&token=sekret')
+  })
+
+  it('exposes a Sentry issue API URL so downstream can fetch exact counts', () => {
+    const result = normalize('event_alert', fx('event_alert.json'), {
+      dispatchId: DISPATCH_ID,
+    })
+    if (result.kind !== 'normalized') throw new Error('expected normalized')
+    expect(result.data.sentryApiIssueUrl).toBe(
+      'https://sentry.io/api/0/organizations/acme/issues/WEB-4F2/',
+    )
+  })
+
+  it('extracts aggregate counts when the event_alert payload nests an issue', () => {
+    const payload = {
+      action: 'triggered',
+      data: {
+        triggered_rule: 'High Priority Errors',
+        issue: { count: 42, userCount: 7, firstSeen: '2025-04-01T00:00:00Z' },
+        event: {
+          event_id: 'e1',
+          issue_id: 'WEB-9',
+          title: 'boom',
+          level: 'error',
+          platform: 'javascript',
+          project: { slug: 'web', organization_slug: 'acme' },
+        },
+      },
+    }
+    const result = normalize('event_alert', payload, { dispatchId: DISPATCH_ID })
+    if (result.kind !== 'normalized') throw new Error('expected normalized')
+    expect(result.data.count).toBe(42)
+    expect(result.data.userCount).toBe(7)
+    expect(result.data.firstSeen).toBe('2025-04-01T00:00:00Z')
+  })
 })
 
 describe('normalize issue', () => {
@@ -115,6 +201,21 @@ describe('normalize issue', () => {
     expect(result.data.firstSeen).toBe('2025-04-22T12:00:00Z')
     expect(result.data.topFrames).toEqual([])
     expect(result.data.breadcrumbs).toEqual([])
+  })
+
+  it('derives an exception and API URL from the issue metadata', () => {
+    const result = normalize('issue', fx('issue_created.json'), {
+      dispatchId: DISPATCH_ID,
+    })
+    if (result.kind !== 'normalized') throw new Error('expected normalized')
+    expect(result.data.exception).toEqual({
+      type: 'TypeError',
+      value: 'Cannot read properties of undefined',
+    })
+    expect(result.data.isUnhandled).toBe(true)
+    expect(result.data.sentryApiIssueUrl).toBe(
+      'https://sentry.io/api/0/organizations/acme/issues/1234567890/',
+    )
   })
 
   it('maps action=unresolved to trigger=regressed', () => {

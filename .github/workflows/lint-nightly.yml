@@ -1,0 +1,106 @@
+name: lint-nightly
+
+# The authoritative, UNCACHED lint of the default branch, once a day.
+# No Claude, no plan credits: a template you adapt to your lint command.
+#
+# Why: PR CI usually restores a lint cache (an ESLint `--cache`, an incremental
+# type-checker, a Turborepo/Nx cache) because a cold lint is slow. Those caches
+# key each file on its OWN contents, so they cannot see that a type-aware rule's
+# verdict on file A depends on types declared in file B. Change a helper from
+# sync to async and every unchanged caller keeps its cached "clean" result: a
+# real `no-floating-promises` violation stays invisible for as long as those
+# callers go untouched. This job closes that hole by linting from cold daily.
+# A finding here means the cache hid a genuine violation: fix the code, not
+# this workflow.
+#
+# Setup (the knobs are in `env:` below):
+#   - LINT_COMMAND: your full lint, WITHOUT any cache flag. Running it without
+#     the cache is the whole point; also never save a cache from this job.
+#   - INSTALL_COMMAND: how to install dependencies (npm ci, pnpm install
+#     --frozen-lockfile, yarn install --immutable, ...). For pnpm or yarn, also
+#     enable the matching package manager (e.g. add pnpm/action-setup before
+#     setup-node, or `corepack enable`).
+#   - NODE_VERSION_FILE: where setup-node reads the Node version
+#     (package.json `engines`/`volta`, .nvmrc, .node-version, .tool-versions).
+#   - NODE_OPTIONS: an uncached type-aware lint of a large repo can exhaust
+#     Node's default heap and thrash in GC until it times out. Raise it if so.
+#   - timeout-minutes: budget for a COLD run, not the warm PR run.
+#     If one cold run cannot fit, split the lint into a matrix of shards
+#     (one directory each) rather than raising the timeout without limit.
+#   - Then uncomment the `schedule:` trigger below.
+#   - SLACK_WEBHOOK_URL (optional secret): an incoming-webhook URL. When set, a
+#     failed OR timed-out run on `main` posts to Slack. Change `main` below if
+#     your default branch differs.
+#
+# Paging rule: a job that hits timeout-minutes ends `cancelled`, which
+# `failure()` misses, so a nightly that always times out would never page.
+# The notify job therefore runs on `always()` and checks for failure OR
+# cancelled.
+
+on:
+  # Ships manual-only, because the template's LINT_COMMAND has to be adapted
+  # first. Once a manual run passes, uncomment the schedule.
+  # schedule:
+  #   # 09:00 UTC daily. Pick a time when someone will read the alert.
+  #   - cron: '0 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One group per ref: a manual dispatch lints its own branch and must not cancel
+# (or be cancelled by) main's run. Never cancel on main: the cancelled run would
+# page and main would go unlinted that day. A second main run queues instead.
+concurrency:
+  group: lint-nightly-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  INSTALL_COMMAND: npm ci
+  LINT_COMMAND: npx eslint . --max-warnings 0
+  NODE_VERSION_FILE: package.json
+  NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+  lint-uncached:
+    name: lint (uncached)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ${{ env.NODE_VERSION_FILE }}
+
+      - name: Install dependencies
+        run: ${{ env.INSTALL_COMMAND }}
+
+      # No cache flag and no cache restore anywhere in this job: that is the
+      # entire point of it.
+      - name: Lint (no cache)
+        run: ${{ env.LINT_COMMAND }}
+
+  notify:
+    name: notify on failure
+    needs: [lint-uncached]
+    if: always() && github.ref == 'refs/heads/main' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Notify Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v4
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: ":rotating_light: Nightly uncached lint ${{ needs.lint-uncached.result }} on main. A `failure` is usually a real violation the PR lint cache hid (fix the code); `cancelled` means it hit its timeout. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Annotate
+        run: echo "::warning::Nightly uncached lint ${{ needs.lint-uncached.result }} on main."

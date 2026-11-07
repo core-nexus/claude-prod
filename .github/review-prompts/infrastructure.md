@@ -140,6 +140,9 @@ code depends on to be built, tested, deployed, and reviewed:
 - [ ] No prompt file contains stale references to removed files, renamed
       directories, or deprecated APIs
 - [ ] The selectable-area list in the workflow matches the scheduler's area list
+      (and the scheduler's own tests pass)
+- [ ] The superseded-review cleanup closes only older items of the same area
+      carrying the review label — never a human's issue or PR
 
 ### 10. Build & Dev Scripts
 
@@ -202,4 +205,6 @@ they are actually broken. Configuration churn creates unnecessary review burden.
   files; instruction files out of date with the actual toolchain; missing
   environment-variable documentation; inconsistent CI settings
 - **LOW** — Minor script improvements, config tidying, better error messages,
-  documentation gaps in infrastructure files, cosmetic nits
+  documentation gaps in infrastructure files
+- **XLOW** — Cosmetic nits in config files, comment improvements, naming
+  preferences

@@ -24,13 +24,33 @@ name: Sentry Triage
 #
 #   2. Configure repo secrets:
 #        CLAUDE_CODE_OAUTH_TOKEN   - Claude Code OAuth token
-#        SENTRY_AUTH_TOKEN         - Sentry user / internal-integration token
+#        SENTRY_AUTH_TOKEN         - Sentry token the Sentry MCP uses to read
+#                                    the issue and post comments. Use an
+#                                    Internal Integration token with issue
+#                                    read + comment access (Issue & Event:
+#                                    Read/Write). A CI-only org token for
+#                                    release / source-map uploads is NOT enough
+#                                    (it gets 403 on issue reads). It is sent
+#                                    with the `Sentry-Bearer` scheme; see the
+#                                    MCP step below.
 #        CLAUDE_PAT                - (optional) PAT used to dispatch CI
 #                                    workflows after the fix PR is opened.
 #                                    Falls back to GITHUB_TOKEN if absent.
 #        SLACK_WEBHOOK_URL         - (optional) failure notifications.
 #
 #   3. Manual smoke testing: workflow_dispatch with a Sentry shortId.
+#
+# Failure modes this workflow makes loud (they would otherwise pass silently):
+#   - The Sentry MCP never connected (bad token / auth scheme): Claude cannot
+#     read the issue, stops early, and the action still "succeeds". The
+#     `Verify Sentry MCP connected` step fails the job instead
+#     (scripts/check-sentry-mcp-connected.sh).
+#   - The job hits timeout-minutes: reported as cancelled, which failure()
+#     alone does not match; the Slack step checks cancelled() too.
+#   - Claude's messages are hidden from the job log (they can carry secrets),
+#     so the transcript is uploaded as a 7-day artifact for debugging. Remove
+#     that step on a public repo (artifacts there are readable by any
+#     signed-in GitHub user).
 
 on:
   repository_dispatch:
@@ -59,6 +79,11 @@ concurrency:
   # re-checked just before pushing).
   group: sentry-triage-${{ github.event.client_payload.shortId || inputs.shortId }}
   cancel-in-progress: false
+
+# Default to least-privilege. Jobs that need more declare their own
+# permissions block, which overrides this default.
+permissions:
+  contents: read
 
 jobs:
   triage:
@@ -148,6 +173,11 @@ jobs:
           echo "----------------------"
 
       # ─── Run Claude Code ───────────────────────────────────────────────────
+      # The hosted Sentry MCP reserves `Authorization: Bearer` for its own OAuth
+      # tokens and answers 401 invalid_token to a Sentry API token sent that
+      # way, which leaves Claude with no Sentry access. A raw Sentry API token
+      # must use the `Sentry-Bearer` scheme (see the getsentry/sentry-mcp
+      # README).
       - name: Run Claude Code triage
         if: steps.dedup.outputs.skip != 'true'
         id: claude
@@ -158,7 +188,7 @@ jobs:
             --dangerously-skip-permissions
             --model opus
             --max-turns 250
-            --mcp-config '{"mcpServers":{"sentry":{"type":"http","url":"https://mcp.sentry.dev/mcp","headers":{"Authorization":"Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}"}}}}'
+            --mcp-config '{"mcpServers":{"sentry":{"type":"http","url":"https://mcp.sentry.dev/mcp","headers":{"Authorization":"Sentry-Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}"}}}}'
             --append-system-prompt "If a CLAUDE.md file exists at the repo root, read and internalize it before starting work. It contains the project's coding standards and conventions. Treat it as authoritative. After pushing your branch, watch CI and wait for checks to pass. If any check fails, read the failure logs, fix the issue, commit and push the fix (never amend), then wait for CI to go green. Do NOT consider your work done until all CI checks pass."
 
           prompt: |
@@ -282,7 +312,12 @@ jobs:
                       24h"). Use the `count` / `userCount` / `firstSeen` /
                       `lastSeen` numbers from `payload.json` (refined by the
                       Sentry MCP if available) — they're always present in the
-                      dispatch, so don't report the blast radius as unknown.
+                      dispatch. Only say a number is unavailable if it is
+                      genuinely null in `payload.json` AND the MCP could not
+                      supply it; never report the blast radius as unknown
+                      when the payload already carries the count. If the
+                      payload has `sentryApiIssueUrl`, the MCP can fetch exact
+                      frequency / affected-user numbers from it.
                     - **What was fixed:** the behavioural change in plain
                       English, not a list of file names.
                     - **Risk:** an honest, concrete assessment of residual
@@ -310,12 +345,29 @@ jobs:
             - NEVER push to `main`. Always push to `${{ steps.dedup.outputs.branch }}`.
             - NEVER force-push. Never `git commit --amend`. Never `git rebase`.
             - Fail fast, fail loud: never paper over an error with
-              `catch (_e) {}` or `.catch(() => {})`.
+              `catch (_e) {}` or `.catch(() => {})`, and never silence a
+              legitimate alert. A misconfiguration or missing env var must
+              stay loud — fix the root cause, don't suppress the report.
             - Exercise real code in tests. Only mock at external service
               boundaries (third-party APIs, payment providers, etc.).
             - If you're uncertain about the fix, prefer a solid regression
               test plus a narrow, conservative code change over a speculative
               refactor.
+
+      # The action hides Claude's messages from the job log (they can carry
+      # secrets), so a run that stops early leaves no trace of why. Keep the
+      # transcript as a short-lived artifact for debugging instead.
+      # On a PUBLIC repo, artifacts are downloadable by any signed-in GitHub
+      # user, and the transcript can contain Sentry event data (user ids,
+      # URLs, messages). Delete this step there, or keep the repo private.
+      - name: Upload Claude transcript
+        if: always() && steps.dedup.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript-${{ steps.dedup.outputs.short_id }}
+          path: ${{ runner.temp }}/claude-execution-output.json
+          retention-days: 7
+          if-no-files-found: warn
 
       # Trigger CI on the new PR's branch. Empty-commit pushes are unreliable —
       # GitHub may suppress pull_request:synchronize even when using a PAT —
@@ -345,15 +397,38 @@ jobs:
           echo "PR for ${{ steps.dedup.outputs.branch }} already exists — skipping."
           echo "::notice::Sentry triage skipped for ${{ steps.dedup.outputs.short_id }}: PR already exists."
 
+      # A Sentry MCP that never connected leaves Claude unable to read the
+      # issue: it stops after a few turns and the action still reports success.
+      # That is misconfiguration, so fail the job here and let the Slack step
+      # below report it. Placed after the CI trigger so a PR Claude did open
+      # still gets its CI. "Claude opened no PR" is NOT checked: declining to
+      # fix an issue is a legitimate outcome.
+      - name: Verify Sentry MCP connected
+        if: steps.claude.outcome == 'success'
+        run: .github/workflows/scripts/check-sentry-mcp-connected.sh "$RUNNER_TEMP/claude-execution-output.json"
+
       # This workflow runs on repository_dispatch / workflow_dispatch, never
       # on a PR, so a failure here is invisible without an out-of-band signal.
-      # Posts to Slack when the job fails on the default branch. Skipped for
-      # non-main dispatches (typically manual smoke tests) to avoid noise.
-      # Remove or replace this step if you don't use Slack.
-      - name: Notify Slack on failure
-        if: failure() && github.ref == 'refs/heads/main' && env.SLACK_WEBHOOK_URL != ''
+      # Posts to Slack when the job fails on the default branch. A
+      # repository_dispatch run (the webhook path) always runs on the default
+      # branch; a workflow_dispatch run has the ref it was started from, so
+      # manual smoke tests on a branch stay quiet. cancelled() covers hitting
+      # timeout-minutes, which failure() alone does not match.
+      # Remove or replace these two steps if you don't use Slack.
+      #
+      # A step's own `env:` is not visible to its `if:`, so the "is the
+      # webhook configured?" test runs in a separate step and is read back as
+      # an output. Keeping the secret in step-level env (rather than job-level)
+      # also keeps it out of the Claude step's environment.
+      - name: Check Slack webhook configured
+        id: slack
+        if: always()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: echo "configured=${SLACK_WEBHOOK_URL:+true}" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack on failure
+        if: (failure() || cancelled()) && github.ref == 'refs/heads/main' && steps.slack.outputs.configured == 'true'
         uses: slackapi/slack-github-action@v3.0.2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}

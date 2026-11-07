@@ -17,6 +17,8 @@
       "datetime": "2025-04-22T12:00:00Z",
       "received": "2025-04-22T12:00:01Z",
       "type": "error",
+      "transaction": "/dashboard",
+      "server_name": "web-01",
       "message": "TypeError: Cannot read properties of undefined (reading 'foo')",
       "web_url": "https://acme.sentry.io/issues/WEB-4F2/events/abc123abc123abc123abc123abc12345/",
       "issue_url": "https://acme.sentry.io/issues/WEB-4F2/",
@@ -24,6 +26,37 @@
         "slug": "web",
         "name": "web",
         "organization_slug": "acme"
+      },
+      "sdk": { "name": "sentry.javascript.browser", "version": "7.99.0" },
+      "fingerprint": ["{{ default }}"],
+      "request": {
+        "url": "https://acme.example/dashboard",
+        "method": "GET",
+        "query_string": "tab=overview&token=sekret"
+      },
+      "user": {
+        "id": "u_123",
+        "username": "alice",
+        "email": "alice@example.com",
+        "ip_address": "203.0.113.7",
+        "geo": { "country_code": "US", "region": "California", "city": "San Francisco" }
+      },
+      "contexts": {
+        "browser": { "type": "browser", "name": "Chrome", "version": "120.0" },
+        "os": { "type": "os", "name": "Mac OS X", "version": "14.2" },
+        "runtime": { "type": "runtime", "name": "node", "version": "20.11.0" },
+        "trace": {
+          "type": "trace",
+          "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "span_id": "bbbbbbbbbbbbbbbb",
+          "op": "navigation"
+        },
+        "device": { "type": "device", "family": "Mac", "arch": "arm64" }
+      },
+      "extra": {
+        "feature_flag": "new-dashboard",
+        "retry_count": 3,
+        "api_token": "should-be-dropped"
       },
       "exception": {
         "values": [

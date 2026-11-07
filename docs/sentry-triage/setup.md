@@ -39,7 +39,9 @@ secret and the scopes needed to post comments back on issues.
    - **Client Secret** → Worker env var `SENTRY_CLIENT_SECRET` (via
      `wrangler secret put`).
    - **Auth Token** → GitHub repo secret `SENTRY_AUTH_TOKEN` (Claude uses
-     this via MCP to fetch full event data).
+     this via MCP to fetch full event data and to comment on the issue).
+     Use this integration token, not a CI-only org token for release /
+     source-map uploads: that kind gets 403 on every issue read.
 
 > **Why an Internal Integration and not a plain webhook?** Internal
 > Integrations sign their webhooks (HMAC in `Sentry-Hook-Signature`), so
@@ -98,9 +100,14 @@ In the Worker's `wrangler.toml` (and via `wrangler secret put` for
 secrets):
 
 - `SENTRY_CLIENT_SECRET` — from step 1 (via `wrangler secret put`).
-- `SENTRY_DSN` — DSN from a dedicated `sentry-triage` Sentry project (to
-  avoid feedback loops). Set via `wrangler secret put`. Optional but
-  recommended.
+- `SENTRY_DSN` — where the Worker reports its own failures (expired
+  `GITHUB_PAT`, unparseable `PROJECT_MAP`, non-2xx from GitHub, unhandled
+  exceptions). Set via `wrangler secret put`. Strongly recommended: without
+  it a broken dispatch is only a log line, because a 502 back to Sentry is
+  not an error as far as Cloudflare is concerned. Any project's DSN works,
+  including the one whose alert rule calls the Worker: self-reports are
+  tagged `sentry_triage.self_report=true` and titled `[sentry-triage] ...`,
+  and the Worker filters those echoes out, so there is no feedback loop.
 - `PROJECT_MAP` — JSON mapping Sentry project slugs → target GitHub
   repos. Example:
 
@@ -135,7 +142,9 @@ In each target repo:
   after the fix PR is opened. Falls back to `GITHUB_TOKEN` if absent.
 - `SENTRY_AUTH_TOKEN` — **new.** The Internal Integration Auth Token from
   step 1. This lets the Claude Code run fetch full Sentry event data via
-  the Sentry MCP.
+  the Sentry MCP. The workflow sends it as `Authorization: Sentry-Bearer
+  <token>`: the hosted Sentry MCP keeps plain `Bearer` for its own OAuth
+  tokens and answers 401 to an API token sent that way.
 
 ### Files
 
@@ -156,7 +165,15 @@ In each target repo:
    - A PR appears on branch `sentry-fix/<SHORT_ID>` with a fix (or a
      reasoned no-op comment on the Sentry issue and no PR — both are
      acceptable).
-5. Trigger a **real** error in staging. Confirm Rule A fires, and confirm
+   - If the run fails at **Verify Sentry MCP connected**, Claude ran
+     without Sentry access: check `SENTRY_AUTH_TOKEN` and its scopes. The
+     run's `claude-transcript-<SHORT_ID>` artifact (kept 7 days) shows what
+     Claude saw.
+6. Optional: revoke or mistype `GITHUB_PAT` on a staging Worker and send a
+   test notification. The Worker should answer 502 and a
+   `[sentry-triage] github_dispatch_failed: GitHub 401` issue should appear
+   in the `SENTRY_DSN` project, without a second dispatch.
+7. Trigger a **real** error in staging. Confirm Rule A fires, and confirm
    a second identical error within 30 days does NOT re-trigger (action
    interval doing its job).
 
