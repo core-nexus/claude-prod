@@ -12,11 +12,16 @@ set -euo pipefail
 #   CHANGELOG_FILE - path to the changelog (default: CHANGELOG.md)
 #   BASE_BRANCH    - PR base branch (default: main)
 #   EVENT_NAME     - trigger event name, used in the PR body (default: schedule)
+#   CHANGELOG_AUTO_MERGE - "true" arms squash auto-merge on the new PR so it lands
+#                    once required checks pass (default: false). The next run
+#                    starts from the newest dated heading on the base branch, so
+#                    an unmerged changelog PR makes it repeat these entries.
 
 : "${BRANCH:?}" "${GH_TOKEN:?}"
 CHANGELOG_FILE="${CHANGELOG_FILE:-CHANGELOG.md}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 EVENT_NAME="${EVENT_NAME:-schedule}"
+CHANGELOG_AUTO_MERGE="${CHANGELOG_AUTO_MERGE:-false}"
 
 DATE=$(date -u +%Y-%m-%d)
 git config user.name "github-actions[bot]"
@@ -30,3 +35,8 @@ gh pr create \
   --body "Automated changelog update (triggered by ${EVENT_NAME}). Review the generated entries before merging." \
   --base "${BASE_BRANCH}" \
   --head "${BRANCH}"
+
+if [[ "${CHANGELOG_AUTO_MERGE}" == "true" ]]; then
+  # Fails loudly if the repo has auto-merge disabled: the setting asked for it.
+  gh pr merge "${BRANCH}" --auto --squash
+fi

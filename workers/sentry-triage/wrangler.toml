@@ -4,6 +4,10 @@ compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+# Recommended: pin account_id so a deploy can only target the account that owns
+# the Worker and its SENTRY_SEEN KV namespace.
+# account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+
 # KV namespace used for 24h dedup of seen Sentry shortIds.
 # Create one with:
 #   wrangler kv namespace create SENTRY_SEEN
@@ -26,4 +30,5 @@ ALLOW_WARNINGS_GLOBAL = "false"
 #   SENTRY_CLIENT_SECRET  - Sentry Internal Integration client secret
 #   PROJECT_MAP           - JSON string, Sentry project slug -> { repo, eventType, ... }
 #   GITHUB_PAT            - fine-grained PAT with contents+actions write on each target repo
-#   SENTRY_DSN            - (optional) DSN for self-reporting to Sentry
+#   SENTRY_DSN            - strongly recommended: DSN the Worker reports its own
+#                           failures to (expired PAT, bad PROJECT_MAP, ...). See README.

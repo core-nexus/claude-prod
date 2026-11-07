@@ -44,7 +44,10 @@ npm install  # or yarn install, pnpm install — use the project's package manag
       id, whether it's **direct** or **transitive**, and whether it's reachable
       in **production** runtime, **dev-only**, or **build-only**
 - [ ] Check if any dependencies have known supply chain attacks
-- [ ] Verify no `postinstall` scripts do anything suspicious
+- [ ] Verify no `postinstall` scripts do anything suspicious. If the package
+      manager blocks dependency install scripts by default and keeps an
+      allowlist (e.g. pnpm's allowed-builds setting), audit that list
+      specifically — every entry runs arbitrary code on install
 
 #### Remediation Strategy (decision tree)
 
@@ -97,6 +100,13 @@ Review the health of the project's most critical dependencies:
 - [ ] Identify packages in `package.json` that are not imported anywhere
   - Check both `dependencies` and `devDependencies`
   - Some packages may be used via CLI (not imported) — verify before removing
+- [ ] Be careful with packages that never appear in an `import`: linter/
+      formatter/bundler plugins loaded by config, CLI-only tools invoked from
+      package scripts, and peer dependencies required by other packages
+- [ ] Look for **duplicate functionality**: two packages that do the same thing
+      (two date libraries, two UUID libraries). Pick one, remove the other.
+- [ ] Look for `@types/*` packages whose runtime counterpart has been removed —
+      they linger and often pull in stale code
 - [ ] Identify packages that could be replaced with:
   - Built-in Node.js/runtime APIs
   - Smaller alternatives
@@ -134,19 +144,32 @@ Review the health of the project's most critical dependencies:
 - [ ] No typosquat package names (names similar to popular packages)
 - [ ] GitHub Actions use pinned versions (`@v4` not `@main`)
 - [ ] Docker images (if any) use specific tags, not `latest`
+- [ ] No server-only dependency is accidentally bundled into the client
 - [ ] No `eval()` or dynamic code execution from dependency content
 
 ## What to Fix
 
-1. **Update** packages with known vulnerabilities to patched versions
-2. **Remove** unused dependencies from `package.json`
-3. **Document** any dependencies that can't be updated (with reason)
-4. **Flag** license concerns for human review
-5. **Update** dependency automation config if new groups are needed
+In priority order:
+
+1. **Add overrides** for transitive vulnerabilities with a patch path, per the
+   decision tree above, and list each override with the advisory it closes in
+   the PR body.
+2. **Remove** unused dependencies (and regenerate the lockfile).
+3. **Remove or replace** duplicate-functionality dependencies.
+4. **Update** packages with known vulnerabilities to patched versions — only
+   where no update bot will (if one runs, don't open version-bump-only PRs;
+   that's its job).
+5. **Document** any vulnerability that cannot be fixed, with the risk
+   assessment and why it is accepted.
+6. **Flag** license concerns for human review — never silently change the
+   project's licensing posture.
+7. **Update** dependency automation config if new groups are needed
 
 ## Severity Guide
 
 - **CRITICAL**: Known exploited vulnerability, compromised package, license violation
 - **HIGH**: Unpatched security vulnerability, severely outdated critical dependency
 - **MEDIUM**: Outdated dependencies with available updates, unused dependencies
-- **LOW**: Minor version updates, bundle optimization opportunities
+- **LOW**: Minor version updates, bundle optimization opportunities, dev-only
+  vulnerabilities with no remediation path that are knowingly accepted
+- **XLOW**: Nits not worth an automated fix cycle

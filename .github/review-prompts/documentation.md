@@ -61,7 +61,7 @@ PRIMARY documentation for both AI agents and developers.
 ### Configuration Documentation
 
 - [ ] CI/CD workflows have comments explaining their purpose
-- [ ] Cron schedules are documented with what they do and why
+- [ ] Cron schedules are documented with what they do and why that timing
 - [ ] Environment-specific behavior is documented
 - [ ] Feature flags or toggles are documented
 

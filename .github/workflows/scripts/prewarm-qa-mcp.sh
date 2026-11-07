@@ -59,7 +59,8 @@ prewarm_one() {
   local attempt
   for attempt in 1 2 3; do
     echo "::group::Pre-warm ${label} (attempt ${attempt}/3)"
-    local start_msg="[$(date -u +%FT%TZ)] Attempt ${attempt}: npx --yes ${spec} --help"
+    local start_msg
+    start_msg="[$(date -u +%FT%TZ)] Attempt ${attempt}: npx --yes ${spec} --help"
     echo "${start_msg}" | tee -a "${log_path}"
 
     # 90s budget per attempt: cold npx fetches can be slow on
@@ -123,6 +124,12 @@ fi
 # Both failed — write a diagnostic comment so the post-comment step can
 # post a useful message to the PR. Including the tail of the install
 # logs means the user sees the actual root cause inline.
+#
+# The verdict tail is BLOCKING:YES / MAX_PRIORITY:UNKNOWN, never NO/NONE:
+# QA checked nothing, so the verdict must not read as a pass to a human or
+# to an agent (e.g. the babysit skill) that parses the tail. UNKNOWN (which
+# a real report never writes) marks it as a non-report to re-run rather
+# than a finding to fix.
 COMMENT_FILE="${ARTIFACTS_DIR}/_comment.md"
 
 LOG_TAILS=""
@@ -151,8 +158,10 @@ ${LOG_TAILS}
 
 If this is happening repeatedly, investigate the workflow's MCP configuration in \`.github/workflows/ai-qa-review.yml\` and the prewarm script at \`.github/workflows/scripts/prewarm-qa-mcp.sh\`.
 
-AI_QA_BLOCKING:NO
-AI_QA_MAX_PRIORITY:NONE
+QA has not checked this PR, so this is not a pass. If a code-review workflow (\`claude-pr-review\`) also runs on this repo, its comment is your signal for this PR in the meantime.
+
+AI_QA_BLOCKING:YES
+AI_QA_MAX_PRIORITY:UNKNOWN
 EOF
 
 echo "::error::Both browser MCP packages failed to pre-warm. Wrote diagnostic to ${COMMENT_FILE}."

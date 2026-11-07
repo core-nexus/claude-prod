@@ -18,6 +18,4 @@ This is an alias. The skill lives at `pr-reset`.
 Read `skills/pr-reset/SKILL.md` and follow it exactly, passing `$ARGUMENTS`
 through unchanged.
 
-Both names exist because this workflow is called `pr-restart` in the
-`core-nexus/core` repo and `pr-reset` in `aistrology/aistrologer`, and either
-should work in either place.
+Both names exist because people reach for either word, and either should work.

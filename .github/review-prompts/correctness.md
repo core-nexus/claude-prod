@@ -78,6 +78,23 @@ code changes are worse than missed bugs.
 - [ ] Merge/spread operations don't silently override important values
 - [ ] Calculations use correct formulas and units
 
+### Data-Layer Logic
+
+- [ ] Query filters match the intended records (correct field, correct operator)
+- [ ] Index usage matches the actual index definitions in the schema
+- [ ] Writes update the correct fields and don't clobber unrelated data
+- [ ] Pagination logic handles edge cases (empty results, last page)
+- [ ] Validator/schema definitions match the data actually being passed
+
+### UI Framework Logic
+
+- [ ] Reactive/derived values have correct dependencies and update when expected
+- [ ] Store/state subscriptions read the correct store
+- [ ] Component props are passed with correct names and types
+- [ ] Event handlers reference the correct handler function
+- [ ] Conditional rendering uses the correct condition
+- [ ] List rendering uses stable keys to avoid rendering bugs
+
 ### Control Flow
 
 - [ ] Early returns don't skip necessary cleanup or state updates

@@ -70,6 +70,9 @@ error from your error-reporting service:
 ### Promise Handling
 
 - [ ] No floating promises (every Promise is awaited, returned, or explicitly voided)
+- [ ] No misused promises (an async function passed where a sync callback is
+      expected, e.g. as an event handler or `forEach` callback, so its rejection
+      goes nowhere)
 - [ ] `Promise.all` / `Promise.allSettled` usage handles individual rejections
 - [ ] Async event handlers properly catch and report errors
 - [ ] Reactive/computed values with async operations handle errors
@@ -81,6 +84,7 @@ error from your error-reporting service:
   - What input was provided (without PII)
   - What the expected outcome was
 - [ ] Stack traces are preserved when re-throwing
+- [ ] Error boundaries don't lose error context by catching too broadly
 - [ ] Error tracking tags/context are set for important error categories
 
 ### Resilience Patterns
@@ -104,6 +108,9 @@ error from your error-reporting service:
 
 - [ ] All scheduled (cron) CI workflows notify the team on failure
 - [ ] Push-to-main workflows notify on failure (not just PR checks)
+- [ ] Manually dispatched (non-PR) workflows notify on failure too
+- [ ] Matrix workflows notify from one dedicated job (`needs:` the matrix), not
+      a per-matrix-entry step, so one bad run doesn't send N duplicate alerts
 - [ ] Background jobs that can fail without anyone noticing have alerting
 
 ## Anti-Patterns to Fix

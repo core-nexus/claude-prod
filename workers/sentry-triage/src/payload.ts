@@ -1,10 +1,12 @@
 import type { Normalized } from './types.js'
 
-// GitHub repository_dispatch client_payload must be under 10 KB. The
-// dispatcher wraps the normalized object into a stringified `data` field,
-// which inflates bytes via JSON escaping (~5–10% on typical payloads). We
-// target 8500 bytes on the pre-escape object to leave headroom.
-export const MAX_CLIENT_PAYLOAD_BYTES = 8500
+// The dispatcher wraps the normalized object into `{ shortId, data }`, where
+// `data` is the stringified payload. GitHub rejects a `repository_dispatch`
+// whose `client_payload` exceeds ~10 KB with a 422 ("client_payload is too
+// large"). We measure the *actual* serialized client_payload (post-escaping)
+// rather than estimating from the pre-escape object, and keep a small margin
+// under the cap.
+export const MAX_CLIENT_PAYLOAD_BYTES = 9500
 
 const CORE_TAG_WHITELIST = [
   'environment',
@@ -22,8 +24,16 @@ const CORE_TAG_WHITELIST = [
   'mechanism',
 ]
 
-function byteLength(obj: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(obj)).length
+const CORE_CONTEXTS = ['trace', 'runtime', 'os', 'browser']
+
+// Build the exact object handed to GitHub as `client_payload`. Kept here (and
+// reused by the dispatcher) so size measurement matches what's actually sent.
+export function buildClientPayload(n: Normalized): { shortId: string; data: string } {
+  return { shortId: n.shortId, data: JSON.stringify(n) }
+}
+
+function clientPayloadBytes(n: Normalized): number {
+  return new TextEncoder().encode(JSON.stringify(buildClientPayload(n))).length
 }
 
 function stripContextLines(n: Normalized): Normalized {
@@ -42,34 +52,61 @@ function restrictTags(n: Normalized, keys: string[]): Normalized {
   return { ...n, tags: keep }
 }
 
-// Progressively shrink until under budget. Order:
-//   1. Drop breadcrumbs.
-//   2. Reduce topFrames to 3.
-//   3. Whitelist tags to a small core set.
-//   4. Strip contextLine on frames.
-// Never drop URLs or IDs.
+function restrictContexts(n: Normalized, keep: string[]): Normalized {
+  const out: Record<string, Record<string, string>> = {}
+  for (const k of keep) {
+    if (n.contexts[k]) out[k] = n.contexts[k]!
+  }
+  return { ...n, contexts: out }
+}
+
+// Progressively shrink until the serialized client_payload is under budget.
+// Order sheds the least decision-relevant data first; aggregate counts, the
+// exception, IDs, and URLs are never dropped.
 export function fitClientPayload(n: Normalized): Normalized {
-  if (byteLength(n) <= MAX_CLIENT_PAYLOAD_BYTES) return n
+  let out = n
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
 
-  let out: Normalized = { ...n, breadcrumbs: [] }
-  if (byteLength(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+  // 1. Drop free-form extra blob.
+  out = { ...out, extra: {} }
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
 
-  out = { ...out, topFrames: out.topFrames.slice(0, 3) }
-  if (byteLength(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+  // 2. Drop breadcrumbs.
+  out = { ...out, breadcrumbs: [] }
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
 
+  // 3. Reduce contexts to a core set.
+  out = restrictContexts(out, CORE_CONTEXTS)
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+
+  // 4. Reduce topFrames to 5.
+  out = { ...out, topFrames: out.topFrames.slice(0, 5) }
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+
+  // 5. Whitelist tags to a small core set.
   out = restrictTags(out, CORE_TAG_WHITELIST)
-  if (byteLength(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
 
+  // 6. Reduce topFrames to 3.
+  out = { ...out, topFrames: out.topFrames.slice(0, 3) }
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+
+  // 7. Drop remaining contexts and fingerprint.
+  out = { ...out, contexts: {}, fingerprint: [] }
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+
+  // 8. Strip contextLine on frames.
   out = stripContextLines(out)
-  if (byteLength(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
+  if (clientPayloadBytes(out) <= MAX_CLIENT_PAYLOAD_BYTES) return out
 
-  // Last resort: truncate title/culprit.
+  // Last resort: truncate long strings. Never drop URLs or IDs.
   const truncate = (s: string | null, max: number): string | null =>
     s === null ? null : s.length > max ? s.slice(0, max) : s
   out = {
     ...out,
     title: truncate(out.title, 500) ?? out.title,
     culprit: truncate(out.culprit, 500),
+    message: truncate(out.message, 500),
     exception: out.exception
       ? {
           type: truncate(out.exception.type, 200) ?? '',

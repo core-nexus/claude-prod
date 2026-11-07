@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { filter } from '../src/filter.js'
+import { SELF_REPORT_PREFIX, SELF_REPORT_TAG } from '../src/selfReport.js'
 import type { Normalized } from '../src/types.js'
 
 function makeNormalized(overrides: Partial<Normalized> = {}): Normalized {
@@ -10,19 +11,24 @@ function makeNormalized(overrides: Partial<Normalized> = {}): Normalized {
     issueId: '1',
     title: 't',
     culprit: null,
+    message: null,
     level: 'error',
     platform: 'javascript',
     environment: 'production',
     release: null,
+    transaction: null,
+    serverName: null,
     firstSeen: null,
     lastSeen: null,
     count: 5,
     userCount: 1,
     issueType: 'error',
     issueCategory: null,
+    isUnhandled: null,
     sentryIssueUrl: 'https://sentry.io/',
     sentryEventUrl: null,
     sentryApiEventUrl: null,
+    sentryApiIssueUrl: null,
     latestEventId: null,
     triggeredRule: null,
     trigger: 'created',
@@ -30,6 +36,12 @@ function makeNormalized(overrides: Partial<Normalized> = {}): Normalized {
     topFrames: [],
     breadcrumbs: [],
     tags: {},
+    request: null,
+    user: null,
+    contexts: {},
+    sdk: null,
+    fingerprint: [],
+    extra: {},
     dispatchId: 'd',
     ...overrides,
   }
@@ -118,5 +130,23 @@ describe('filter', () => {
       allowWarningsGlobal: false,
     })
     expect(res.pass).toBe(true)
+  })
+
+  it("drops the Worker's own self-report by tag", () => {
+    const r = filter({
+      normalized: makeNormalized({ tags: { [SELF_REPORT_TAG]: 'true' } }),
+      projectConfig: { repo: 'a/b', eventType: 'x' },
+      allowWarningsGlobal: false,
+    })
+    expect(r).toEqual({ pass: false, reason: 'self_report' })
+  })
+
+  it("drops the Worker's own self-report by title prefix when tags are absent", () => {
+    const r = filter({
+      normalized: makeNormalized({ title: `${SELF_REPORT_PREFIX} github_dispatch_failed: GitHub 401` }),
+      projectConfig: { repo: 'a/b', eventType: 'x' },
+      allowWarningsGlobal: false,
+    })
+    expect(r).toEqual({ pass: false, reason: 'self_report' })
   })
 })

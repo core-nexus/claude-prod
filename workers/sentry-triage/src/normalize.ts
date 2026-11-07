@@ -1,25 +1,48 @@
-import type { Breadcrumb, Frame, Level, Normalized, Trigger } from './types.js'
+import type {
+  Breadcrumb,
+  Frame,
+  Level,
+  Normalized,
+  Sdk,
+  SentryRequest,
+  SentryUser,
+  Trigger,
+} from './types.js'
 
-const TAG_WHITELIST = new Set([
-  'browser',
-  'browser.name',
-  'os',
-  'os.name',
-  'runtime',
-  'runtime.name',
-  'url',
-  'transaction',
-  'environment',
-  'release',
-  'user.id',
+// Tags carry a lot of triage signal (feature flags, tenant ids, custom
+// dimensions), so we forward all of them rather than a small whitelist —
+// minus anything that looks like a secret, and minus PII when redaction is on.
+const PII_TAG_KEYS = new Set([
   'user.email',
-  'level',
-  'handled',
-  'mechanism',
-  'server_name',
+  'user.ip_address',
+  'user.ip',
+  'email',
+  'ip',
+  'ip_address',
 ])
-
-const PII_TAG_KEYS = new Set(['user.email', 'user.ip_address'])
+const SENSITIVE_KEY_RE =
+  /secret|token|password|passwd|api[_-]?key|apikey|auth|credential|cookie|session|private[_-]?key/i
+const MAX_TAGS = 50
+const MAX_TAG_VALUE = 200
+// Contexts we forward verbatim (flattened to scalar string maps). Others are
+// dropped to keep the payload focused and within GitHub's size cap.
+const CONTEXT_WHITELIST = new Set([
+  'trace',
+  'runtime',
+  'os',
+  'browser',
+  'device',
+  'app',
+  'gpu',
+  'culture',
+  'response',
+  'profile',
+  'replay',
+])
+const MAX_CONTEXT_KEYS = 16
+const MAX_EXTRA_KEYS = 20
+const MAX_EXTRA_VALUE = 300
+const MAX_FINGERPRINT = 16
 
 const VALID_LEVELS: ReadonlySet<Level> = new Set<Level>([
   'fatal',
@@ -139,6 +162,19 @@ function extractBreadcrumbs(event: Record<string, unknown> | null): Breadcrumb[]
   }))
 }
 
+function isSensitiveKey(key: string, redactPii: boolean): boolean {
+  if (SENSITIVE_KEY_RE.test(key)) return true
+  if (redactPii && PII_TAG_KEYS.has(key)) return true
+  return false
+}
+
+function scalarToString(v: unknown): string | null {
+  if (typeof v === 'string') return v.length > 0 ? v : null
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+  if (typeof v === 'boolean') return String(v)
+  return null
+}
+
 function extractTags(
   event: Record<string, unknown> | null,
   issue: Record<string, unknown> | null,
@@ -146,27 +182,207 @@ function extractTags(
 ): Record<string, string> {
   const out: Record<string, string> = {}
   const rawTags: unknown = event?.tags ?? issue?.tags ?? null
+  const add = (k: unknown, v: unknown): void => {
+    if (typeof k !== 'string' || k.length === 0) return
+    if (Object.keys(out).length >= MAX_TAGS && !(k in out)) return
+    const val = scalarToString(v)
+    if (val === null) return
+    if (isSensitiveKey(k, redactPii)) return
+    out[k] = truncate(val, MAX_TAG_VALUE)!
+  }
   if (Array.isArray(rawTags)) {
     for (const pair of rawTags) {
       if (Array.isArray(pair) && pair.length >= 2) {
-        const k = pair[0]
-        const v = pair[1]
-        if (typeof k === 'string' && typeof v === 'string') {
-          if (!TAG_WHITELIST.has(k)) continue
-          if (redactPii && PII_TAG_KEYS.has(k)) continue
-          out[k] = v
-        }
+        add(pair[0], pair[1])
+      } else if (pair && typeof pair === 'object') {
+        const p = pair as Record<string, unknown>
+        add(p.key, p.value)
       }
     }
   } else if (rawTags && typeof rawTags === 'object') {
     for (const [k, v] of Object.entries(rawTags as Record<string, unknown>)) {
-      if (typeof v !== 'string') continue
-      if (!TAG_WHITELIST.has(k)) continue
-      if (redactPii && PII_TAG_KEYS.has(k)) continue
-      out[k] = v
+      add(k, v)
     }
   }
   return out
+}
+
+function extractMessage(event: Record<string, unknown> | null): string | null {
+  if (!event) return null
+  const direct = asString(event.message)
+  if (direct) return truncate(direct, 500)
+  const logentry = (event.logentry ?? null) as Record<string, unknown> | null
+  if (logentry) {
+    const formatted = asString(logentry.formatted) ?? asString(logentry.message)
+    if (formatted) return truncate(formatted, 500)
+  }
+  return null
+}
+
+function extractRequest(
+  event: Record<string, unknown> | null,
+  redactPii: boolean,
+): SentryRequest | null {
+  if (!event) return null
+  const req = (event.request ?? null) as Record<string, unknown> | null
+  if (!req) return null
+  const url = truncate(asString(req.url), 500)
+  const method = asString(req.method)
+  // Query strings frequently carry tokens/PII, so only forward them when
+  // redaction is disabled.
+  let queryString: string | null = null
+  if (!redactPii) {
+    const raw = req.query_string
+    if (typeof raw === 'string') queryString = truncate(raw, 300)
+    else if (Array.isArray(raw)) {
+      const parts: string[] = []
+      for (const pair of raw) {
+        if (Array.isArray(pair) && pair.length >= 2) {
+          const k = scalarToString(pair[0])
+          const v = scalarToString(pair[1])
+          if (k !== null) parts.push(v === null ? k : `${k}=${v}`)
+        }
+      }
+      queryString = parts.length > 0 ? truncate(parts.join('&'), 300) : null
+    }
+  }
+  if (url === null && method === null && queryString === null) return null
+  return { url, method, queryString }
+}
+
+function extractUser(
+  event: Record<string, unknown> | null,
+  redactPii: boolean,
+): SentryUser | null {
+  if (!event) return null
+  const user = (event.user ?? null) as Record<string, unknown> | null
+  if (!user) return null
+  let geo: Record<string, string> | null = null
+  const rawGeo = (user.geo ?? null) as Record<string, unknown> | null
+  if (rawGeo) {
+    const g: Record<string, string> = {}
+    for (const key of ['country_code', 'region', 'city', 'subdivision']) {
+      const v = asString(rawGeo[key])
+      if (v) g[key] = v
+    }
+    if (Object.keys(g).length > 0) geo = g
+  }
+  const out: SentryUser = {
+    id: asString(user.id),
+    username: asString(user.username),
+    email: redactPii ? null : asString(user.email),
+    ipAddress: redactPii ? null : (asString(user.ip_address) ?? asString(user.ip)),
+    geo,
+  }
+  if (
+    out.id === null &&
+    out.username === null &&
+    out.email === null &&
+    out.ipAddress === null &&
+    out.geo === null
+  ) {
+    return null
+  }
+  return out
+}
+
+function extractContexts(
+  event: Record<string, unknown> | null,
+): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {}
+  if (!event) return out
+  const contexts = (event.contexts ?? null) as Record<string, unknown> | null
+  if (!contexts) return out
+  for (const [name, value] of Object.entries(contexts)) {
+    if (!CONTEXT_WHITELIST.has(name)) continue
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const flat: Record<string, string> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k === 'type') continue
+      if (Object.keys(flat).length >= MAX_CONTEXT_KEYS) break
+      const s = scalarToString(v)
+      if (s !== null) flat[k] = truncate(s, MAX_TAG_VALUE)!
+    }
+    if (Object.keys(flat).length > 0) out[name] = flat
+  }
+  return out
+}
+
+function extractSdk(event: Record<string, unknown> | null): Sdk | null {
+  if (!event) return null
+  const sdk = (event.sdk ?? null) as Record<string, unknown> | null
+  if (!sdk) return null
+  const name = asString(sdk.name)
+  const version = asString(sdk.version)
+  if (name === null && version === null) return null
+  return { name, version }
+}
+
+function extractFingerprint(event: Record<string, unknown> | null): string[] {
+  if (!event) return []
+  const fp = event.fingerprint
+  if (!Array.isArray(fp)) return []
+  const out: string[] = []
+  for (const part of fp) {
+    const s = scalarToString(part)
+    if (s !== null) out.push(truncate(s, MAX_TAG_VALUE)!)
+    if (out.length >= MAX_FINGERPRINT) break
+  }
+  return out
+}
+
+function extractExtra(
+  event: Record<string, unknown> | null,
+  redactPii: boolean,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!event) return out
+  const extra = (event.extra ?? null) as Record<string, unknown> | null
+  if (!extra) return out
+  for (const [k, v] of Object.entries(extra)) {
+    if (Object.keys(out).length >= MAX_EXTRA_KEYS) break
+    if (isSensitiveKey(k, redactPii)) continue
+    let s: string | null
+    if (typeof v === 'string') s = v
+    else if (v === null || v === undefined) s = null
+    else {
+      try {
+        s = JSON.stringify(v)
+      } catch {
+        s = null
+      }
+    }
+    if (s === null || s.length === 0) continue
+    out[k] = truncate(s, MAX_EXTRA_VALUE)!
+  }
+  return out
+}
+
+// Aggregate stats (times seen, users affected, first/last seen) live on
+// Sentry's *issue* serializer, not the per-event one. Issue webhooks include
+// them directly; event_alert webhooks usually don't, but newer payloads
+// sometimes nest an `issue` object alongside the event — extract from wherever
+// it shows up so we forward exact numbers whenever Sentry gives them to us.
+function extractAggregate(
+  ...sources: Array<Record<string, unknown> | null | undefined>
+): { count: number | null; userCount: number | null; firstSeen: string | null; lastSeen: string | null } {
+  let count: number | null = null
+  let userCount: number | null = null
+  let firstSeen: string | null = null
+  let lastSeen: string | null = null
+  for (const src of sources) {
+    if (!src) continue
+    count ??= asNumber(src.count)
+    userCount ??= asNumber(src.userCount) ?? asNumber(src.user_count)
+    firstSeen ??= asString(src.firstSeen) ?? asString(src.first_seen)
+    lastSeen ??= asString(src.lastSeen) ?? asString(src.last_seen)
+  }
+  return { count, userCount, firstSeen, lastSeen }
+}
+
+function asBool(v: unknown): boolean | null {
+  if (typeof v === 'boolean') return v
+  return null
 }
 
 // Best-effort: derive {org, project} slugs from a Sentry URL like
@@ -288,26 +504,44 @@ export function normalize(
       latestEventId && projectSlug
         ? `https://sentry.io/api/0/projects/${orgSlug}/${projectSlug}/events/${latestEventId}/`
         : null
+    const resolvedIssueId = issueId || shortId
+    // So downstream can fetch exact frequency/affected-user counts that the
+    // event_alert webhook does not include.
+    const sentryApiIssueUrl = resolvedIssueId
+      ? `https://sentry.io/api/0/organizations/${orgSlug}/issues/${resolvedIssueId}/`
+      : null
+    const dataIssue = (data.issue ?? null) as Record<string, unknown> | null
+    const aggregate = extractAggregate(
+      event,
+      dataIssue,
+      (event.metadata ?? null) as Record<string, unknown> | null,
+    )
     const normalized: Normalized = {
       projectSlug,
       orgSlug,
       shortId: asString(event.issue_id) ?? shortId,
-      issueId: issueId || shortId,
+      issueId: resolvedIssueId,
       title: asString(event.title) ?? asString(event.message) ?? '(no title)',
       culprit: asString(event.culprit),
+      message: extractMessage(event),
       level: asLevel(event.level),
       platform: asString(event.platform) ?? 'unknown',
       environment: asString(event.environment),
       release: asString(event.release),
-      firstSeen: null,
-      lastSeen: asString(event.datetime) ?? asString(event.received),
-      count: null,
-      userCount: null,
+      transaction: asString(event.transaction),
+      serverName: asString(event.server_name),
+      firstSeen: aggregate.firstSeen,
+      lastSeen:
+        aggregate.lastSeen ?? asString(event.datetime) ?? asString(event.received),
+      count: aggregate.count,
+      userCount: aggregate.userCount,
       issueType: asString(event.type),
       issueCategory: null,
+      isUnhandled: asBool(event.unhandled) ?? asBool(dataIssue?.isUnhandled ?? null),
       sentryIssueUrl,
       sentryEventUrl,
       sentryApiEventUrl,
+      sentryApiIssueUrl,
       latestEventId,
       triggeredRule: asString(data.triggered_rule),
       trigger: 'event_alert',
@@ -315,6 +549,12 @@ export function normalize(
       topFrames: extractFrames(event),
       breadcrumbs: extractBreadcrumbs(event),
       tags: extractTags(event, null, redactPii),
+      request: extractRequest(event, redactPii),
+      user: extractUser(event, redactPii),
+      contexts: extractContexts(event),
+      sdk: extractSdk(event),
+      fingerprint: extractFingerprint(event),
+      extra: extractExtra(event, redactPii),
       dispatchId: opts.dispatchId,
     }
     return { kind: 'normalized', data: normalized }
@@ -338,6 +578,16 @@ export function normalize(
     const trigger = mapIssueAction(action)
     const sentryIssueUrl =
       permalink ?? `https://${orgSlug}.sentry.io/issues/${issueId}/`
+    const sentryApiIssueUrl = `https://sentry.io/api/0/organizations/${orgSlug}/issues/${issueId}/`
+    // The issue serializer carries error type/value under `metadata`; surface
+    // it as a structured exception so triage has the failure detail.
+    const metadata = (issue.metadata ?? null) as Record<string, unknown> | null
+    const metaType = asString(metadata?.type)
+    const metaValue = asString(metadata?.value)
+    const issueException =
+      metaType !== null || metaValue !== null
+        ? { type: metaType ?? '', value: metaValue ?? '' }
+        : null
     const normalized: Normalized = {
       projectSlug,
       orgSlug,
@@ -345,26 +595,37 @@ export function normalize(
       issueId,
       title: asString(issue.title) ?? '(no title)',
       culprit: asString(issue.culprit),
+      message: metaValue ? truncate(metaValue, 500) : null,
       level: asLevel(issue.level),
       platform: asString(issue.platform) ?? asString(project?.platform) ?? 'unknown',
       environment: null,
       release: null,
+      transaction: null,
+      serverName: null,
       firstSeen: asString(issue.firstSeen) ?? asString(issue.first_seen),
       lastSeen: asString(issue.lastSeen) ?? asString(issue.last_seen),
       count: asNumber(issue.count),
       userCount: asNumber(issue.userCount) ?? asNumber(issue.user_count),
       issueType: asString(issue.type),
       issueCategory: asString(issue.issueCategory) ?? asString(issue.issue_category),
+      isUnhandled: asBool(issue.isUnhandled) ?? asBool(metadata?.isUnhandled ?? null),
       sentryIssueUrl,
       sentryEventUrl: null,
       sentryApiEventUrl: null,
+      sentryApiIssueUrl,
       latestEventId: null,
       triggeredRule: null,
       trigger,
-      exception: null,
+      exception: issueException,
       topFrames: [],
       breadcrumbs: [],
       tags: extractTags(null, issue, redactPii),
+      request: null,
+      user: null,
+      contexts: {},
+      sdk: null,
+      fingerprint: [],
+      extra: {},
       dispatchId: opts.dispatchId,
     }
     return { kind: 'normalized', data: normalized }

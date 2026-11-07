@@ -72,7 +72,8 @@ Walk every diff to the data model in the window. For each change:
 - [ ] **Denormalization is justified** — if a field is duplicated from another
       table, is there a clear write path that keeps it in sync?
 - [ ] **Table growth profile** — will this table grow linearly with users,
-      faster, or slower? Is that OK at 10x and 100x scale?
+      faster, or slower? Is that OK at 10x and 100x scale (see the scaling
+      context in `performance-server.md` and `scalability.md`)?
 - [ ] **Privacy blast radius** — does the new shape make sensitive data easier
       or harder to leak? (Overlaps with the privacy review, but schema changes
       deserve a fresh look here.)
@@ -144,7 +145,8 @@ For each architectural change, answer: "Does this hold at 2,000 users? At
       present?)
 - [ ] New dependencies don't duplicate existing ones (e.g. a second date
       library, a second validation library)
-- [ ] New dependencies are tree-shakeable and don't balloon the bundle
+- [ ] New dependencies are tree-shakeable and don't balloon the bundle —
+      cross-reference `performance-client.md`
 - [ ] Deprecations or removed dependencies are clean (no dead imports)
 
 ### Tests Around Architectural Changes

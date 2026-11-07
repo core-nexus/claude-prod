@@ -19,6 +19,18 @@ name: Update Changelog
 #   - CLAUDE_PAT (optional): a fine-grained PAT with contents:write +
 #                      pull-requests:write. Lets the opened PR trigger other
 #                      workflows (e.g. CI). Falls back to the default token.
+#   - CHANGELOG_GUIDE (optional): path to a writing guide for entries. If the file
+#                      exists, Claude follows it on top of the rules in the prompt.
+#                      A ready-made one ships at docs/changelog-guide.md.
+#   - CHANGELOG_AUTO_MERGE: 'true' arms squash auto-merge on the opened PR so it
+#                      lands once CI is green (needs "Allow auto-merge" enabled in
+#                      the repo settings). Default 'false'. Each run starts from the
+#                      newest dated heading on the base branch, so a changelog PR
+#                      left unmerged makes the next run write the same entries
+#                      again: merge (or close) each one before the next run.
+#   - SLACK_WEBHOOK_URL (optional secret): an incoming-webhook URL. When set, a
+#                      failed run on the default branch posts to Slack; when unset,
+#                      the failure is only annotated on the run.
 
 on:
   schedule:
@@ -32,8 +44,10 @@ env:
   CHANGELOG_FILE: CHANGELOG.md
   # Branch to compare merged PRs against and to target the PR at.
   BASE_BRANCH: main
-  # Where the fetched PR data is written for Claude to read.
-  PR_JSON_FILE: ${{ runner.temp }}/merged-prs.json
+  # Optional writing guide; ignored when the file does not exist.
+  CHANGELOG_GUIDE: docs/changelog-guide.md
+  # 'true' to arm squash auto-merge on the opened changelog PR.
+  CHANGELOG_AUTO_MERGE: 'false'
 
 jobs:
   update-changelog:
@@ -43,6 +57,9 @@ jobs:
       contents: write
       pull-requests: write
       id-token: write
+    env:
+      # Job-level so the notify step's `if:` can see whether it is set.
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,6 +72,9 @@ jobs:
         run: |
           BRANCH="changelog/auto-$(date -u +%Y-%m-%d)"
           echo "name=${BRANCH}" >> "$GITHUB_OUTPUT"
+          # Where the fetched PR data is written for Claude to read. Set here
+          # because the `runner` context is not available in workflow-level env.
+          echo "PR_JSON_FILE=${RUNNER_TEMP}/merged-prs.json" >> "$GITHUB_ENV"
           git checkout -b "${BRANCH}"
 
       - name: Determine date range
@@ -82,6 +102,8 @@ jobs:
             You are maintaining a user-facing product changelog. Read these first:
             - ${{ env.CHANGELOG_FILE }} (the current changelog; it may not exist yet)
             - ${{ env.PR_JSON_FILE }} (PRs merged since the last changelog entry)
+            - ${{ env.CHANGELOG_GUIDE }} (the project's writing guide, if the file
+              exists; where it is stricter than the rules below, follow it)
 
             ## Your task
 
@@ -97,7 +119,11 @@ jobs:
             3. Identify which PRs contain USER-FACING changes. Skip:
                - Refactors, CI/CD changes, test-only changes, dependency bumps
                - Internal tooling and documentation-only PRs
-               - Anything not visible to an end user
+               - Anything not visible to a non-technical end user
+               - Anything that reveals how the system works inside or where it
+                 was weak (see "What never goes in" below). If a PR mixes a
+                 visible change with one of these, write only the visible change.
+                 When in doubt, leave it out.
             4. Group the user-facing changes by date (use the UTC date from mergedAt).
             5. For each date, categorize changes under New / Improved / Fixed:
                - New       — brand-new capabilities or features
@@ -105,6 +131,9 @@ jobs:
                - Fixed     — bug fixes
             6. Write entries in plain, user-focused language: concise, non-technical.
                No PR numbers, no component or file names, no code references.
+               One line per change; start with a verb or noun, not "We". Present
+               tense for new features, past tense for fixes ("Fixed an issue
+               where..."). Group related micro-changes into one bullet.
             7. Insert new dated sections into ${{ env.CHANGELOG_FILE }}, newest-first,
                below the header. Use this shape:
 
@@ -123,6 +152,27 @@ jobs:
             8. Do NOT duplicate entries for a date already present — only add new
                dated sections, or append genuinely new items to an existing date.
             9. If there are no user-facing changes, do not modify the file.
+
+            ## What never goes in
+            The changelog is public-facing: it describes features users can see
+            and bugs they would have noticed, never internals or weaknesses.
+            Leave an entry out (or rewrite it so only the user-visible change
+            remains) when it touches:
+            - Security: vulnerabilities closed, access-control or permission
+              fixes, data visible to the wrong people, auth/session internals,
+              rate limits and their numbers, admin-only surfaces, anything that
+              names an exploit path.
+            - Billing and money integrity: double charges, wrong amounts, credits
+              or refunds mishandled, plans that did not deliver as advertised,
+              fraud or manual-review controls.
+            - Compliance and legal: privacy fixes, consent/terms/disclosure
+              changes made to meet a legal requirement, data retention.
+            - Infrastructure and vendors: environments, which provider does what,
+              failover, configuration, moderation or safety-filter mechanics.
+            - Admissions: nothing that implies the project did something wrong
+              (wording that says something used to be misleading). An ordinary
+              bug fix is fine; a fix whose description reveals one of the
+              categories above is not.
 
             ## Important rules
             - All dates in YYYY-MM-DD format (ISO 8601), UTC timezone.
@@ -147,19 +197,18 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: .github/workflows/scripts/changelog-commit.sh
 
-      # Notify on failure. This generic placeholder just annotates the run.
-      # To send to Slack instead, replace this step with a guarded step like:
-      #   - name: Notify Slack on failure
-      #     if: failure() && github.ref == 'refs/heads/main' && env.SLACK_WEBHOOK != ''
-      #     env:
-      #       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-      #     uses: slackapi/slack-github-action@v3.0.2
-      #     with:
-      #       webhook: ${{ secrets.SLACK_WEBHOOK }}
-      #       webhook-type: incoming-webhook
-      #       payload: |
-      #         text: ":rotating_light: Changelog update failed"
-      - name: Notify on failure
+      # Background job: failures must be seen (see AGENTS.md). Posts to Slack
+      # when SLACK_WEBHOOK_URL is set; otherwise just annotates the run.
+      - name: Notify Slack on failure
+        if: failure() && github.ref == format('refs/heads/{0}', env.BASE_BRANCH) && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v4
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: ":rotating_light: Changelog update failed (${{ github.event_name }}): ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Annotate failure
         if: failure() && github.ref == format('refs/heads/{0}', env.BASE_BRANCH)
         run: |
           echo "::warning::Changelog update workflow failed on ${{ github.ref_name }} (trigger: ${{ github.event_name }})."

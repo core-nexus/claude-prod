@@ -1,4 +1,5 @@
 import { handleRequest } from './handler.js'
+import { reportToSentry } from './selfReport.js'
 import type { Env } from './types.js'
 
 export default {
@@ -14,6 +15,13 @@ export default {
           ts: new Date().toISOString(),
           msg: 'unhandled_exception',
           err: message,
+        }),
+      )
+      ctx.waitUntil(
+        reportToSentry(env.SENTRY_DSN, {
+          reason: 'unhandled_exception',
+          detail: message,
+          extra: { stack: err instanceof Error ? err.stack : undefined },
         }),
       )
       return new Response('internal error', { status: 500 })
